@@ -219,9 +219,44 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 - **SDK 交互**:把 `query()` 包一层适配器,测试时 mock 该适配器,验证「挂起—推送—恢复」事件流转,不真调 claude。
 - **手动验证**:真机(手机浏览器)端到端跑一次续聊 + 答题 + 权限确认。
 
-## 11. 技术栈
+## 11. 项目结构(Monorepo)
 
+用 **npm workspaces** 组织 monorepo。核心动机:前后端共享 TypeScript 类型(stream-json 事件、API 契约、交互卡片数据结构),避免前后端定义漂移。
+
+```
+cc-web/
+├── package.json            # 根:workspaces 声明 + 公共脚本
+├── tsconfig.base.json      # 共享 TS 配置
+├── packages/
+│   ├── shared/             # @cc-web/shared:共享类型与契约
+│   │   ├── src/
+│   │   │   ├── events.ts   # SSE 事件、stream-json 事件类型
+│   │   │   ├── api.ts      # REST 请求/响应类型
+│   │   │   └── cards.ts    # 交互卡片(答题/权限/计划)数据结构
+│   │   └── package.json
+│   ├── server/             # @cc-web/server:Node + Express 后端
+│   │   ├── src/
+│   │   │   ├── index.ts        # 入口 + 配置加载
+│   │   │   ├── auth.ts         # 鉴权中间件
+│   │   │   ├── jsonl.ts        # JSONL 解析器
+│   │   │   ├── search.ts       # 全文搜索
+│   │   │   ├── sessions.ts     # SDK 会话管理(挂起—推送—恢复)
+│   │   │   └── routes.ts       # REST + SSE 路由
+│   │   └── package.json    # 依赖 @cc-web/shared
+│   └── web/                # @cc-web/web:React 前端
+│       ├── src/
+│       │   ├── components/     # 侧栏、对话流、卡片、折叠区块
+│       │   └── ...
+│       └── package.json    # 依赖 @cc-web/shared
+```
+
+根 `package.json` 提供公共脚本(`npm run dev`、`npm run build`、`npm test`),通过 workspaces 分发到各包。
+
+## 12. 技术栈
+
+- 语言:**TypeScript**(全栈,monorepo 共享类型)
 - 后端:Node + Express + `@anthropic-ai/claude-agent-sdk`
-- 前端:React
+- 前端:React(Vite)
 - 测试:Vitest
 - 通信:HTTP(REST)+ SSE
+- Monorepo:npm workspaces
