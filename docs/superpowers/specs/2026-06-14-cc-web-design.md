@@ -1,0 +1,178 @@
+# cc-web 设计文档
+
+将本地 Claude Code 的聊天搬上 Web,支持浏览历史并在网页(含手机)里继续对话。
+
+- 日期:2026-06-14
+- 状态:设计已确认,待评审
+
+## 1. 目标与范围
+
+### 核心目标
+
+既能**浏览**本地 Claude Code 的历史聊天,又能在**网页里继续对话**——包括在手机上回答 Claude Code 抛出的交互式问题(多选提问、权限确认、计划审批)。
+
+### MVP 功能
+
+- 浏览历史记录(项目 → session → 消息)
+- 继续旧 session 续聊
+- 新建对话
+- 搜索历史
+- 手机端回答 Claude 的交互式提问 / 权限确认 / 计划审批
+- 流式逐字输出
+
+### 非目标(本期不做)
+
+- 多用户 / 账号体系(仅单一密码/令牌鉴权)
+- 历史记录的编辑、删除、导出
+- 数据库持久化(直接读 `.jsonl`)
+- 搜索索引(MVP 用内存全文扫描)
+
+## 2. 整体架构
+
+```
+┌─────────────┐   HTTP + SSE   ┌────────────────────┐   Agent SDK   ┌──────────────┐
+│  React 前端  │ ◄───────────► │  Node 后端 (Express)  │ ───────────► │  claude 子进程 │
+│ (含手机端)   │                │                      │  stream-json  │   (本地常驻)   │
+└─────────────┘                └──────────┬───────────┘               └──────────────┘
+                                          │ 读
+                                          ▼
+                        ~/.claude/projects/**/*.jsonl
+                              (历史聊天记录)
+```
+
+三层结构:
+
+- **React 前端**:历史浏览、对话视图、续聊/新建输入框、流式渲染、手机端交互卡片(单选/多选/允许-拒绝/批准计划)。
+- **Node 后端 (Express)**:① 读取并解析 `.jsonl` 历史(浏览 + 搜索);② 通过官方 Agent SDK 启动并管理 claude 常驻会话;③ 把流式输出与待答事项经 SSE 转发给前端;④ 鉴权中间件前置于所有路由。
+- **claude 子进程**:由 Agent SDK 管理,真正执行对话与工具调用。
+
+### 前后端通信
+
+- **回复流 / 待答事项**:SSE(Server-Sent Events)。单向"后端→前端",HTTP 原生、自动重连。
+- **发消息 / 提交答案**:普通 POST。
+
+## 3. 后端 ↔ Claude Code 集成
+
+使用官方 **Agent SDK**(`@anthropic-ai/claude-agent-sdk`)的 `query()` 函数,封装了 spawn 子进程、解析 stream-json、双向通信。
+
+```js
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+const session = query({
+  prompt: asyncIterableOfUserMessages,   // 流式输入:把手机端回答喂回去
+  options: {
+    resume: sessionId,                    // 续聊旧 session
+    permissionMode: config.permissionMode, // 可配置,默认 "default"
+    canUseTool: async (tool, input) => {  // 权限确认回调
+      return await waitForUserDecision(tool, input); // 挂起,等手机端决策
+    },
+  },
+});
+
+for await (const msg of session) {        // 流式输出:逐字 / 逐事件
+  pushToBrowserViaSSE(msg);
+}
+```
+
+### 交互事件映射
+
+| Claude 抛出的事件 | SDK 表现 | 手机网页渲染 | 用户回答后 |
+|---|---|---|---|
+| 普通回复 | `assistant` 消息流 | 逐字气泡 | — |
+| 要执行命令 / 改文件 | `canUseTool` 回调 | 「允许 / 拒绝」按钮卡片 | resolve 回调 |
+| 多选提问 (AskUserQuestion) | 工具调用事件 | A/B/C/D 单/多选卡片 | 答案 → 流式输入 |
+| 计划审批 (ExitPlanMode) | 工具调用事件 | 「批准计划」卡片 | 答案 → 流式输入 |
+
+### 交互模型:挂起—推送—等待—恢复
+
+后端 `query()` 循环遇到需要决策的事件时**挂起**(回调里 `await` 一个 Promise),同时通过 SSE 把结构化"待答事项"推到手机;用户在网页点选,前端 POST 回答案,后端 resolve 该 Promise,会话继续。
+
+```
+用户在手机点「允许」
+      │ POST /api/sessions/:id/respond
+      ▼
+  Node 后端 ──写回调/stdin──► claude 子进程(常驻)
+      ▲                              │
+      │ SSE 推「有个待答事项」          │ 输出:提问 / 权限 / 计划事件
+      └──────────────────────────────┘
+```
+
+## 4. 数据层
+
+后端不使用数据库,直接读 `~/.claude/projects/**/*.jsonl`。
+
+- 每个目录 = 一个项目(目录名是编码过的路径,如 `C--Users-huang-Desktop`)。
+- 每个 `.jsonl` 文件 = 一个 session,逐行 JSON 记录。
+
+### JSONL 解析器模块
+
+- 逐行读取,过滤出可展示的消息类型(`user` / `assistant` / `text`),跳过噪音类型(`system` / `mode` / `permission-mode` / `file-history-snapshot` / `last-prompt` 等)。
+- 组装统一消息结构:角色、内容、时间戳、模型。
+- 容错:跳过损坏行、处理空文件。
+
+### 会话标题
+
+JSONL 无现成标题。用该 session 第一条 `user` 消息的前若干字符作为标题。
+
+### 搜索
+
+MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建索引(非目标)。
+
+## 5. API 设计
+
+所有路由前置鉴权中间件。
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| `POST` | `/api/auth` | 用密码/令牌换取会话 cookie/JWT |
+| `GET` | `/api/projects` | 列出所有项目 |
+| `GET` | `/api/projects/:id/sessions` | 列出某项目下的 session(标题、时间、消息数) |
+| `GET` | `/api/sessions/:id` | 读取某 session 完整消息 |
+| `GET` | `/api/search?q=` | 全文搜索历史 |
+| `POST` | `/api/sessions/:id/continue` | 续聊:启动 SDK 会话 |
+| `POST` | `/api/sessions/new` | 新建对话 |
+| `GET` | `/api/sessions/:id/stream` | SSE:流式接收回复 + 待答事项 |
+| `POST` | `/api/sessions/:id/respond` | 提交答案(权限 / 选项 / 计划) |
+
+## 6. 配置
+
+启动时通过环境变量 / 配置文件指定。关键项:
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `AUTH_TOKEN` | (必填) | 单一访问密码 / 令牌 |
+| `PERMISSION_MODE` | `"default"` | 权限模式,可选 `default` / `acceptEdits` / `bypassPermissions` 等。**非 default 为高风险,远程慎用** |
+| `PORT` | `3000` | 服务端口 |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | 历史记录根目录 |
+| `SESSION_IDLE_TIMEOUT` | `30m` | 常驻会话空闲超时 |
+| `MAX_CONCURRENT_SESSIONS` | (建议设上限) | 同时运行的子进程数上限 |
+
+## 7. 错误处理
+
+- **子进程崩溃/退出**:SSE 推错误事件,前端显示「会话中断」,可重试。
+- **空闲超时**:超时自动回收子进程,释放资源。
+- **并发上限**:限制同时运行的子进程数,防止资源耗尽。
+- **前端**:SSE 断线自动重连,重连后拉取错过的消息;网络/发送失败给明确提示。
+
+## 8. 安全
+
+远程访问是高风险点(别的设备可连到能执行命令/改文件的 Claude 服务),重点防护:
+
+- **鉴权**:所有 `/api` 与 SSE 路由前置鉴权中间件;令牌从环境变量/配置读,不硬编码。
+- **传输**:远程访问建议套 HTTPS(自签证书或反向代理),否则密码明文过网。
+- **权限策略**:默认 `permissionMode: "default"`(危险操作仍需手机确认);可经配置调整,文档明确标注高风险选项警告。
+- **路径隔离**:解析历史时校验路径,只读 `CLAUDE_PROJECTS_DIR` 下文件,防目录穿越。
+
+## 9. 测试策略
+
+- **单元测试 (Vitest)**:JSONL 解析器(各种消息类型、损坏行、空文件)、搜索匹配、会话标题提取。
+- **集成测试**:API 路由(鉴权拦截、列表/读取/搜索),用 mock 文件系统数据。
+- **SDK 交互**:把 `query()` 包一层适配器,测试时 mock 该适配器,验证「挂起—推送—恢复」事件流转,不真调 claude。
+- **手动验证**:真机(手机浏览器)端到端跑一次续聊 + 答题 + 权限确认。
+
+## 10. 技术栈
+
+- 后端:Node + Express + `@anthropic-ai/claude-agent-sdk`
+- 前端:React
+- 测试:Vitest
+- 通信:HTTP(REST)+ SSE
