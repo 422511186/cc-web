@@ -3,6 +3,28 @@ export interface Message {
   content: string;
   timestamp: number;
   model?: string;
+  type?: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'system_message';
+  metadata?: {
+    toolName?: string;
+    toolInput?: any;
+    toolOutput?: any;
+    isError?: boolean;
+    images?: Array<{
+      source: {
+        type: string;
+        media_type: string;
+        data: string;
+      };
+    }>;
+    documents?: Array<{
+      type: string;
+      source?: {
+        type: string;
+        media_type: string;
+        data: string;
+      };
+    }>;
+  };
 }
 
 export interface Project {

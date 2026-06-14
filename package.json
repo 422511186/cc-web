@@ -13,5 +13,8 @@
     "test": "npm run test --workspaces --if-present",
     "dev:server": "npm run dev --workspace @cc-web/server",
     "dev:web": "npm run dev --workspace @cc-web/web"
+  },
+  "dependencies": {
+    "marked": "^18.0.5"
   }
 }
