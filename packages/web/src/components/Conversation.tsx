@@ -672,6 +672,7 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
                 </div>
               ) : (
                 <div
+                  className={`message-card ${isUser ? 'user-message' : 'assistant-message'}`}
                   style={{
                     maxWidth: '65%',
                     padding: '0.875rem 1.125rem',

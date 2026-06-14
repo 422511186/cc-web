@@ -85,8 +85,33 @@
 
 /* Conversation content responsive padding */
 @media (max-width: 768px) {
-  .conversation-container {
-    padding: 1rem;
+  /* Remove side padding from conversation */
+  .conversation-container > div:last-child {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+  }
+
+  /* Full width message cards on mobile */
+  .message-card {
+    max-width: 100% !important;
+    margin: 0 !important;
+    margin-bottom: 0.25rem !important;
+    border-radius: 0 !important;
+    padding: 1rem !important;
+    box-shadow: none !important;
+  }
+
+  /* User message: darker blue for clear distinction */
+  .message-card.user-message {
+    background-color: #1565c0 !important;
+  }
+
+  /* Assistant message: light background with subtle border */
+  .message-card.assistant-message {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #e0e0e0;
   }
 
   .message-content {
@@ -95,7 +120,7 @@
 
   .message-header {
     font-size: 0.8125rem;
-    padding: 0.875rem 1rem !important;
+    padding: 0.75rem 1rem !important;
   }
 
   /* Make buttons more touch-friendly */
