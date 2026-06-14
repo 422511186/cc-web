@@ -62,6 +62,14 @@ export function parseJsonl(content: string): Message[] {
           content = JSON.stringify(parsed.message.content);
         }
 
+        // Skip system/command messages (contain XML tags like <command-message>)
+        if (content.includes('<command-message>') ||
+            content.includes('<local-command-caveat>') ||
+            content.includes('<command-name>') ||
+            content.includes('<system-reminder>')) {
+          continue;
+        }
+
         messages.push({
           role: 'user',
           content,
