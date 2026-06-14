@@ -1,2 +1,4 @@
 .superpowers/
 .idea/
+node_modules
+dist
