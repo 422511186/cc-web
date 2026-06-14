@@ -7,6 +7,10 @@ export interface Config {
   claudeProjectsDir: string;
   imageCacheDir: string;
   permissionMode: string;
+  // ── 计划二新增:SDK 会话相关 ──
+  idleTimeoutMs: number;
+  maxConcurrent: number;
+  uploadsDir: string;
 }
 
 export function loadConfig(): Config {
@@ -19,6 +23,15 @@ export function loadConfig(): Config {
     path.join(path.dirname(claudeProjectsDir), 'image-cache');
   const permissionMode = process.env.PERMISSION_MODE || 'default';
 
+  const idleTimeoutMs = process.env.SESSION_IDLE_TIMEOUT_MS
+    ? Number(process.env.SESSION_IDLE_TIMEOUT_MS)
+    : 30 * 60 * 1000;
+  const maxConcurrent = process.env.MAX_CONCURRENT_SESSIONS
+    ? Number(process.env.MAX_CONCURRENT_SESSIONS)
+    : 4;
+  const uploadsDir = process.env.UPLOADS_DIR ||
+    path.join(process.cwd(), 'uploads');
+
   if (!authToken) {
     throw new Error('AUTH_TOKEN environment variable is required');
   }
@@ -29,5 +42,8 @@ export function loadConfig(): Config {
     claudeProjectsDir,
     imageCacheDir,
     permissionMode,
+    idleTimeoutMs,
+    maxConcurrent,
+    uploadsDir,
   };
 }

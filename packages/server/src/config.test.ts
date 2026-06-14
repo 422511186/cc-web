@@ -65,4 +65,30 @@ describe('loadConfig', () => {
 
     expect(config.port).toBe(3000);
   });
+
+  it('parses session knobs with defaults', () => {
+    process.env.AUTH_TOKEN = 't';
+    delete process.env.SESSION_IDLE_TIMEOUT_MS;
+    delete process.env.MAX_CONCURRENT_SESSIONS;
+    delete process.env.UPLOADS_DIR;
+
+    const config = loadConfig();
+
+    expect(config.idleTimeoutMs).toBe(30 * 60 * 1000); // 30m
+    expect(config.maxConcurrent).toBe(4);
+    expect(config.uploadsDir).toMatch(/uploads$/);
+  });
+
+  it('overrides session knobs from env', () => {
+    process.env.AUTH_TOKEN = 't';
+    process.env.SESSION_IDLE_TIMEOUT_MS = '5000';
+    process.env.MAX_CONCURRENT_SESSIONS = '2';
+    process.env.UPLOADS_DIR = '/tmp/up';
+
+    const config = loadConfig();
+
+    expect(config.idleTimeoutMs).toBe(5000);
+    expect(config.maxConcurrent).toBe(2);
+    expect(config.uploadsDir).toBe('/tmp/up');
+  });
 });
