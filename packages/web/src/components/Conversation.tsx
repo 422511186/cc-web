@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { SessionDetail, Message } from '@cc-web/shared';
+import type { SessionDetail, Message, PendingPrompt, PromptAnswer } from '@cc-web/shared';
 import type { ApiClient } from '../api';
+import type { LiveMessage } from '../useSession';
+import { QuestionCard } from './QuestionCard';
+import { PermissionCard } from './PermissionCard';
+import { PlanCard } from './PlanCard';
 import { marked } from 'marked';
 import '../markdown.css';
 
@@ -8,6 +12,72 @@ interface ConversationProps {
   apiClient: ApiClient;
   projectId: string;
   sessionId: string;
+  /** 实时续聊:已累积的流式消息 */
+  liveMessages?: LiveMessage[];
+  /** 当前待答事项(权限/答题/计划) */
+  pending?: PendingPrompt | null;
+  /** 用户对待答事项的回答回调 */
+  onAnswer?: (a: PromptAnswer) => void;
+}
+
+/** 实时块的轻量折叠展示(thinking / tool_use / tool_result) */
+function LiveCollapsible({ summary, body }: { summary: string; body: string }) {
+  const [collapsed, setCollapsed] = useState(true);
+  return (
+    <div style={{
+      marginBottom: '0.5rem',
+      borderRadius: '6px',
+      backgroundColor: '#fafafa',
+      overflow: 'hidden',
+      border: '1px solid #e8e8e8',
+    }}>
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          padding: '0.6rem 0.9rem',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          fontSize: '0.875rem',
+          color: '#555',
+          userSelect: 'none',
+          backgroundColor: 'rgba(0,0,0,0.02)',
+        }}
+      >
+        <span style={{
+          transform: collapsed ? 'none' : 'rotate(90deg)',
+          transition: 'transform 0.2s',
+          fontSize: '0.75rem',
+        }}>▸</span>
+        <span style={{ flex: 1 }}>{summary}</span>
+      </div>
+      {!collapsed && (
+        <pre style={{
+          margin: 0,
+          padding: '0.9rem',
+          borderTop: '1px solid #e8e8e8',
+          fontSize: '0.8rem',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontFamily: 'monospace',
+          color: '#444',
+          backgroundColor: '#fff',
+        }}>{body}</pre>
+      )}
+    </div>
+  );
+}
+
+/** 把工具入参压成一行摘要 */
+function summarizeInput(input: unknown): string {
+  if (input && typeof input === 'object') {
+    const o = input as Record<string, unknown>;
+    if (typeof o.command === 'string') return o.command;
+    if (typeof o.file_path === 'string') return o.file_path;
+    if (typeof o.path === 'string') return o.path;
+  }
+  try { return JSON.stringify(input).slice(0, 60); } catch { return ''; }
 }
 
 // A small image attachment thumbnail (chat-bubble style). Clicking opens the lightbox.
@@ -229,7 +299,7 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
-export function Conversation({ apiClient, projectId, sessionId }: ConversationProps) {
+export function Conversation({ apiClient, projectId, sessionId, liveMessages, pending, onAnswer }: ConversationProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -744,9 +814,72 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
             </div>
           );
         })}
-      </div>
 
-      {/* Image lightbox: click an attachment thumbnail to view full size */}
+        {/* ── 实时续聊:流式消息 ── */}
+        {liveMessages && liveMessages.length > 0 && (
+          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+            {liveMessages.map((m, i) => {
+              const hasContent = m.blocks.length > 0 || m.streaming;
+              if (!hasContent) return null;
+              return (
+                <div
+                  key={`live-${i}`}
+                  className="message-card assistant-message"
+                  style={{ width: '100%', maxWidth: '900px', margin: '0 auto 1rem', padding: '0.5rem 0' }}
+                >
+                  {m.blocks.map((b, bi) => {
+                    if (b.kind === 'text') {
+                      const html = marked.parse(b.text, { async: false }) as string;
+                      return (
+                        <div
+                          key={bi}
+                          className="markdown-content"
+                          style={{ lineHeight: '1.6' }}
+                          dangerouslySetInnerHTML={{ __html: html }}
+                        />
+                      );
+                    }
+                    if (b.kind === 'thinking') {
+                      return <LiveCollapsible key={bi} summary="💭 思考" body={b.text} />;
+                    }
+                    if (b.kind === 'tool_use') {
+                      return (
+                        <LiveCollapsible
+                          key={bi}
+                          summary={`🔧 ${b.name}: ${summarizeInput(b.input)}`}
+                          body={JSON.stringify(b.input, null, 2)}
+                        />
+                      );
+                    }
+                    // tool_result
+                    return (
+                      <LiveCollapsible
+                        key={bi}
+                        summary={b.isError ? '工具结果 ✗' : '工具结果 ✓'}
+                        body={b.text}
+                      />
+                    );
+                  })}
+                  {m.streaming && (
+                    <div className="msg-streaming" style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
+                      {m.streaming}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── 待答事项卡片 ── */}
+        {pending && onAnswer && (
+          <div className="pending-card" style={{ maxWidth: '900px', margin: '0 auto' }}>
+            {pending.kind === 'question' && <QuestionCard prompt={pending} onAnswer={onAnswer} />}
+            {pending.kind === 'permission' && <PermissionCard prompt={pending} onAnswer={onAnswer} />}
+            {pending.kind === 'plan' && <PlanCard prompt={pending} onAnswer={onAnswer} />}
+          </div>
+        )}
+      </div>
       {lightboxSrc && (
         <div
           onClick={() => setLightboxSrc(null)}
