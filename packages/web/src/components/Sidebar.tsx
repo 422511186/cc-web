@@ -179,7 +179,10 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: Sideb
                       fontWeight: selectedSessionId === session.id ? 500 : 400,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      lineHeight: '1.4',
                     }}>
                       {session.title}
                     </div>

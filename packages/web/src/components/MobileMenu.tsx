@@ -40,19 +40,48 @@ export function MobileMenu({ children }: MobileMenuProps) {
             top: '1rem',
             left: '1rem',
             zIndex: 1001,
-            width: '40px',
-            height: '40px',
+            width: '48px',
+            height: '48px',
             backgroundColor: '#1976d2',
             border: 'none',
-            borderRadius: '8px',
+            borderRadius: '12px',
             cursor: 'pointer',
             display: isOpen ? 'none' : 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            gap: '5px',
+            boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+            transition: 'all 0.2s',
+          }}
+          onMouseDown={(e) => {
+            e.currentTarget.style.transform = 'scale(0.95)';
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.transform = 'scale(1)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'scale(1)';
           }}
         >
-          <span style={{ color: 'white', fontSize: '1.5rem' }}>☰</span>
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: 'white',
+            borderRadius: '2px',
+          }} />
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: 'white',
+            borderRadius: '2px',
+          }} />
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: 'white',
+            borderRadius: '2px',
+          }} />
         </button>
       )}
 
