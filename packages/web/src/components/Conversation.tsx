@@ -406,13 +406,13 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
   const visibleDotIndices = getVisibleDotIndices();
 
   return (
-    <div style={{
+    <div className="conversation-container" style={{
       height: '100%',
       display: 'flex',
       flexDirection: 'column',
       position: 'relative',
     }}>
-      <div style={{
+      <div className="message-header" style={{
         padding: '1.25rem 2rem',
         borderBottom: '1px solid #e8e8e8',
         backgroundColor: '#fff',
