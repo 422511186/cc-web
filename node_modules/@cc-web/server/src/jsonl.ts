@@ -36,11 +36,35 @@ export function parseJsonl(content: string): Message[] {
 
       // Handle user messages: type="user" with message.content
       if (parsed.type === 'user' && parsed.message?.content) {
+        let content: string;
+
+        if (typeof parsed.message.content === 'string') {
+          content = parsed.message.content;
+        } else if (Array.isArray(parsed.message.content)) {
+          // message.content can be an array (e.g., tool_result)
+          // Skip tool-related messages, only extract text
+          const textParts: string[] = [];
+          for (const item of parsed.message.content) {
+            if (typeof item === 'string') {
+              textParts.push(item);
+            } else if (typeof item === 'object' && item.type === 'text' && item.text) {
+              textParts.push(item.text);
+            }
+            // Skip tool_result, tool_use, and other non-text types
+          }
+
+          if (textParts.length === 0) {
+            // No actual user text, skip this message
+            continue;
+          }
+          content = textParts.join('\n\n');
+        } else {
+          content = JSON.stringify(parsed.message.content);
+        }
+
         messages.push({
           role: 'user',
-          content: typeof parsed.message.content === 'string'
-            ? parsed.message.content
-            : JSON.stringify(parsed.message.content),
+          content,
           timestamp: parseTimestamp(parsed.timestamp),
           model: parsed.message.model,
         });
