@@ -24,6 +24,8 @@ export interface Message {
         data: string;
       };
     }>;
+    /** Local file paths referenced via "[Image: source: <path>]" markers in the JSONL. */
+    imagePaths?: string[];
   };
 }
 

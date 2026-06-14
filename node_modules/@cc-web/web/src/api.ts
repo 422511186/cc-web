@@ -55,6 +55,12 @@ class ApiClient {
     );
   }
 
+  /** Build a URL for a cached image file, with the auth token as a query param
+   * (since <img src> can't send an Authorization header). */
+  imageUrl(filePath: string): string {
+    return `${API_BASE}/image?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(this.token)}`;
+  }
+
   connectSSE(onSessionUpdate: (update: SSESessionUpdate) => void): () => void {
     // Close existing connection if any
     if (this.eventSource) {

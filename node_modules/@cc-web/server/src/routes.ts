@@ -1,9 +1,21 @@
 import express, { Router } from 'express';
+import path from 'node:path';
+import fs from 'node:fs';
 import type { SessionStore } from './store.js';
 import { searchSessions } from './search.js';
 import { SSEManager } from './sse.js';
 
-export function createRouter(store: SessionStore, sseManager?: SSEManager): Router {
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+};
+
+export function createRouter(store: SessionStore, sseManager?: SSEManager, imageCacheDir?: string): Router {
   const router = Router();
 
   // GET /api/events - SSE endpoint (auth handled via query param since EventSource doesn't support headers)
@@ -74,6 +86,47 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager): Rout
     } catch (error) {
       res.status(500).json({ error: 'Failed to search' });
     }
+  });
+
+  // GET /api/image?path=<abs-path> - serve a pasted image from the image cache.
+  // Access is constrained to imageCacheDir to prevent path traversal.
+  router.get('/image', (req, res) => {
+    if (!imageCacheDir) {
+      res.status(404).json({ error: 'Image serving not configured' });
+      return;
+    }
+
+    const requested = req.query.path;
+    if (!requested || typeof requested !== 'string') {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+
+    // Resolve and confirm the path stays within the image cache directory.
+    const resolved = path.resolve(requested);
+    const cacheRoot = path.resolve(imageCacheDir);
+    const rel = path.relative(cacheRoot, resolved);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    const ext = path.extname(resolved).toLowerCase();
+    const contentType = IMAGE_CONTENT_TYPES[ext];
+    if (!contentType) {
+      res.status(415).json({ error: 'Unsupported image type' });
+      return;
+    }
+
+    fs.stat(resolved, (err, stats) => {
+      if (err || !stats.isFile()) {
+        res.status(404).json({ error: 'Image not found' });
+        return;
+      }
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'private, max-age=86400');
+      fs.createReadStream(resolved).pipe(res);
+    });
   });
 
   return router;

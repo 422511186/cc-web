@@ -5,6 +5,9 @@ export function loadConfig() {
     const port = parseInt(process.env.PORT || '3000', 10) || 3000;
     const claudeProjectsDir = process.env.CLAUDE_PROJECTS_DIR ||
         path.join(os.homedir(), '.claude', 'projects');
+    // Pasted images live in ~/.claude/image-cache (sibling of the projects dir).
+    const imageCacheDir = process.env.CLAUDE_IMAGE_CACHE_DIR ||
+        path.join(path.dirname(claudeProjectsDir), 'image-cache');
     const permissionMode = process.env.PERMISSION_MODE || 'default';
     if (!authToken) {
         throw new Error('AUTH_TOKEN environment variable is required');
@@ -13,6 +16,7 @@ export function loadConfig() {
         authToken,
         port,
         claudeProjectsDir,
+        imageCacheDir,
         permissionMode,
     };
 }

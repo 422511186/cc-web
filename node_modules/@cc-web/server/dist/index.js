@@ -23,7 +23,7 @@ async function main() {
     // Auth middleware for all /api routes
     app.use('/api', createAuthMiddleware(config.authToken));
     // API routes
-    app.use('/api', createRouter(store, sseManager));
+    app.use('/api', createRouter(store, sseManager, config.imageCacheDir));
     // Start server
     const server = app.listen(config.port, () => {
         console.log(`Server listening on port ${config.port}`);

@@ -5,6 +5,7 @@ interface JsonlLine {
   text?: string;
   timestamp?: string | number;
   model?: string;
+  isMeta?: boolean;
   message?: {
     role?: string;
     content?: string | any[];
@@ -31,6 +32,14 @@ export function parseJsonl(content: string): Message[] {
 
       // Skip noise types
       if (!parsed.type || NOISE_TYPES.has(parsed.type)) {
+        continue;
+      }
+
+      // Skip meta messages — Claude Code emits these as internal expansions
+      // (e.g. an `[Image: source: ...]` line for an `[Image #N]` placeholder
+      // already present in the real user message). Rendering them duplicates
+      // the attachment.
+      if (parsed.isMeta) {
         continue;
       }
 
@@ -89,11 +98,22 @@ export function parseJsonl(content: string): Message[] {
           content = JSON.stringify(parsed.message.content);
         }
 
+        // Extract pasted-image markers (`[Image: source: <path>]`) into attachments
+        const extracted = extractImagePaths(content);
+        content = extracted.content;
+        const imagePaths = extracted.imagePaths;
+
         // Add images and documents to metadata
-        if (images.length > 0 || documents.length > 0) {
+        if (images.length > 0 || documents.length > 0 || imagePaths.length > 0) {
           if (!metadata) metadata = {};
           if (images.length > 0) metadata.images = images;
           if (documents.length > 0) metadata.documents = documents;
+          if (imagePaths.length > 0) metadata.imagePaths = imagePaths;
+        }
+
+        // Skip a message that ended up entirely empty after stripping markers
+        if (!content && images.length === 0 && documents.length === 0 && imagePaths.length === 0) {
+          continue;
         }
 
         messages.push({
@@ -180,4 +200,20 @@ function parseTimestamp(ts: string | number | undefined): number {
   if (!ts) return Date.now();
   if (typeof ts === 'number') return ts;
   return new Date(ts).getTime();
+}
+
+/**
+ * Claude Code stores pasted images as a text marker `[Image: source: <abs-path>]`
+ * pointing at a file under ~/.claude/image-cache/. Extract those paths and strip
+ * the markers from the visible text so the UI can render them as attachments.
+ */
+const IMAGE_MARKER_RE = /\[Image:\s*source:\s*([^\]]+?)\]/g;
+
+function extractImagePaths(text: string): { content: string; imagePaths: string[] } {
+  const imagePaths: string[] = [];
+  const content = text.replace(IMAGE_MARKER_RE, (_match, p1: string) => {
+    imagePaths.push(p1.trim());
+    return '';
+  }).replace(/\n{3,}/g, '\n\n').trim();
+  return { content, imagePaths };
 }

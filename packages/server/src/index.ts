@@ -29,7 +29,7 @@ async function main() {
   app.use('/api', createAuthMiddleware(config.authToken));
 
   // API routes
-  app.use('/api', createRouter(store, sseManager));
+  app.use('/api', createRouter(store, sseManager, config.imageCacheDir));
 
   // Start server
   const server = app.listen(config.port, () => {

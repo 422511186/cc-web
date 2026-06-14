@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import { createRouter } from './routes.js';
 import type { SessionStore } from './store.js';
 import { SSEManager } from './sse.js';
@@ -153,6 +156,72 @@ describe('API Routes', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('q query parameter is required');
+    });
+  });
+
+  describe('GET /api/image', () => {
+    let imageDir: string;
+    let imageApp: express.Application;
+    let pngPath: string;
+
+    beforeEach(() => {
+      imageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-web-img-'));
+      pngPath = path.join(imageDir, 'shot.png');
+      // 1x1 transparent PNG
+      fs.writeFileSync(pngPath, Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      ));
+
+      imageApp = express();
+      imageApp.use('/api', createRouter(mockStore, sseManager, imageDir));
+    });
+
+    afterEach(() => {
+      fs.rmSync(imageDir, { recursive: true, force: true });
+    });
+
+    it('should serve an image within the cache dir', async () => {
+      const res = await request(imageApp).get('/api/image').query({ path: pngPath });
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('image/png');
+      expect(res.body.length).toBeGreaterThan(0);
+    });
+
+    it('should reject paths outside the cache dir (traversal)', async () => {
+      const outside = path.join(imageDir, '..', '..', 'secret.png');
+      const res = await request(imageApp).get('/api/image').query({ path: outside });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('should return 404 for a missing file', async () => {
+      const res = await request(imageApp)
+        .get('/api/image')
+        .query({ path: path.join(imageDir, 'nope.png') });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('should reject unsupported extensions', async () => {
+      const txt = path.join(imageDir, 'note.txt');
+      fs.writeFileSync(txt, 'hi');
+      const res = await request(imageApp).get('/api/image').query({ path: txt });
+
+      expect(res.status).toBe(415);
+    });
+
+    it('should return 400 when path param missing', async () => {
+      const res = await request(imageApp).get('/api/image');
+
+      expect(res.status).toBe(400);
+    });
+
+    it('should return 404 when image serving is not configured', async () => {
+      const res = await request(app).get('/api/image').query({ path: pngPath });
+
+      expect(res.status).toBe(404);
     });
   });
 

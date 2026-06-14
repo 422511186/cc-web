@@ -70,6 +70,7 @@ export function MobileMenu({ children }: MobileMenuProps) {
           maxWidth: isMobile ? '300px' : 'none',
         }}
       >
+        {children}
         {/* Close Button */}
         {isMobile && isOpen && (
           <button
@@ -92,7 +93,6 @@ export function MobileMenu({ children }: MobileMenuProps) {
             ×
           </button>
         )}
-        {children}
       </div>
     </>
   );
