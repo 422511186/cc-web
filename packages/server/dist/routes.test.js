@@ -2,18 +2,21 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import { createRouter } from './routes.js';
+import { SSEManager } from './sse.js';
 describe('API Routes', () => {
     let app;
     let mockStore;
+    let sseManager;
     beforeEach(() => {
         mockStore = {
             listProjects: vi.fn(),
             listSessions: vi.fn(),
             getSession: vi.fn(),
         };
+        sseManager = new SSEManager(mockStore);
         app = express();
         app.use(express.json());
-        app.use('/api', createRouter(mockStore));
+        app.use('/api', createRouter(mockStore, sseManager));
     });
     describe('GET /api/projects', () => {
         it('should return list of projects', async () => {
@@ -121,6 +124,23 @@ describe('API Routes', () => {
             const res = await request(app).get('/api/search');
             expect(res.status).toBe(400);
             expect(res.body.error).toBe('q query parameter is required');
+        });
+    });
+    describe('GET /api/events', () => {
+        it('should return SSE stream with correct headers', (done) => {
+            request(app)
+                .get('/api/events')
+                .set('Accept', 'text/event-stream')
+                .end((err, res) => {
+                if (err)
+                    return done(err);
+                expect(res.status).toBe(200);
+                expect(res.headers['content-type']).toBe('text/event-stream');
+                expect(res.headers['cache-control']).toBe('no-cache');
+                expect(res.headers['connection']).toBe('keep-alive');
+                sseManager.close();
+                done();
+            });
         });
     });
 });

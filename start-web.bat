@@ -1,5 +1,5 @@
 @echo off
-REM 前端启动脚本 (Windows)
+REM Frontend startup script (Windows)
 
 echo Starting CC-Web Frontend...
 echo.

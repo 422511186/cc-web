@@ -3,8 +3,9 @@ import { createAuthMiddleware } from './auth.js';
 import type { Request, Response, NextFunction } from 'express';
 
 describe('createAuthMiddleware', () => {
-  const createMockReq = (authHeader?: string): Partial<Request> => ({
+  const createMockReq = (authHeader?: string, queryToken?: string): Partial<Request> => ({
     headers: authHeader ? { authorization: authHeader } : {},
+    query: queryToken ? { token: queryToken } : {},
   });
 
   const createMockRes = (): Partial<Response> => {
@@ -32,7 +33,29 @@ describe('createAuthMiddleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('should return 401 when no authorization header', () => {
+  it('should accept token from query parameter', () => {
+    const middleware = createAuthMiddleware('secret-token');
+    const req = createMockReq(undefined, 'secret-token');
+    const res = createMockRes();
+
+    middleware(req as Request, res as Response, mockNext);
+
+    expect(mockNext).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('should prioritize header token over query token', () => {
+    const middleware = createAuthMiddleware('secret-token');
+    const req = createMockReq('Bearer secret-token', 'wrong-token');
+    const res = createMockRes();
+
+    middleware(req as Request, res as Response, mockNext);
+
+    expect(mockNext).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('should return 401 when no authorization header or query token', () => {
     const middleware = createAuthMiddleware('secret-token');
     const req = createMockReq();
     const res = createMockRes();

@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { searchSessions } from './search.js';
-export function createRouter(store) {
+export function createRouter(store, sseManager) {
     const router = Router();
+    // GET /api/events - SSE endpoint (auth handled via query param since EventSource doesn't support headers)
+    if (sseManager) {
+        router.get('/events', (req, res) => {
+            // Auth is already handled by middleware, just pass through
+            sseManager.handleConnection(res);
+        });
+    }
     // GET /api/projects
     router.get('/projects', async (req, res) => {
         try {

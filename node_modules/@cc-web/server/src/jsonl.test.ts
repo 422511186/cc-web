@@ -22,12 +22,15 @@ describe('parseJsonl', () => {
     expect(messages[0].model).toBe('claude-opus-4-8');
   });
 
-  it('should skip thinking blocks in assistant messages', () => {
+  it('should parse thinking blocks as separate messages', () => {
     const jsonl = `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me think"},{"type":"text","text":"Final answer"}]},"timestamp":"2026-06-11T17:45:31.574Z"}`;
     const messages = parseJsonl(jsonl);
 
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toBe('Final answer');
+    expect(messages).toHaveLength(2);
+    expect(messages[0].type).toBe('thinking');
+    expect(messages[0].content).toBe('Let me think');
+    expect(messages[1].type).toBe('text');
+    expect(messages[1].content).toBe('Final answer');
   });
 
   it('should parse multiple messages', () => {

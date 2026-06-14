@@ -417,17 +417,65 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
         borderBottom: '1px solid #e8e8e8',
         backgroundColor: '#fff',
         boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.75rem',
       }}>
-        <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#333' }}>
-          {session.title}
-        </h2>
-        <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.375rem' }}>
-          {new Date(session.updatedAt).toLocaleString('zh-CN', {
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
+        {/* Mobile menu button - only shown on mobile */}
+        <button
+          onClick={() => {
+            if ((window as any).__toggleMobileMenu) {
+              (window as any).__toggleMobileMenu();
+            }
+          }}
+          aria-label="打开菜单"
+          className="mobile-menu-button-header"
+          style={{
+            width: '40px',
+            height: '40px',
+            backgroundColor: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            display: 'none', // Hidden by default, shown on mobile via CSS
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '5px',
+            padding: 0,
+            flexShrink: 0,
+          }}
+        >
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: '#333',
+            borderRadius: '2px',
+          }} />
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: '#333',
+            borderRadius: '2px',
+          }} />
+          <span style={{
+            width: '20px',
+            height: '2px',
+            backgroundColor: '#333',
+            borderRadius: '2px',
+          }} />
+        </button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#333' }}>
+            {session.title}
+          </h2>
+          <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.375rem' }}>
+            {new Date(session.updatedAt).toLocaleString('zh-CN', {
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </div>
         </div>
       </div>
 
@@ -627,17 +675,18 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
                     maxWidth: '65%',
                     padding: '0.875rem 1.125rem',
                     borderRadius: '12px',
-                    backgroundColor: isUser ? '#e3f2fd' : '#fff',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                    backgroundColor: isUser ? '#1976d2' : '#fff',
+                    color: isUser ? '#fff' : '#333',
+                    boxShadow: isUser ? '0 2px 4px rgba(25, 118, 210, 0.3)' : '0 1px 2px rgba(0,0,0,0.08)',
                     position: 'relative',
                   }}
                 >
-                  <div style={{ color: '#333', lineHeight: '1.5' }}>
+                  <div style={{ color: isUser ? '#fff' : '#333', lineHeight: '1.5' }}>
                     <MessageContent content={message.content} role={message.role} metadata={message.metadata} />
                   </div>
                   <div style={{
                     fontSize: '0.6875rem',
-                    color: '#999',
+                    color: isUser ? 'rgba(255, 255, 255, 0.8)' : '#999',
                     marginTop: '0.5rem',
                     textAlign: isUser ? 'right' : 'left',
                   }}>

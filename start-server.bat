@@ -1,10 +1,10 @@
 @echo off
-REM 后端启动脚本 (Windows)
+REM Backend startup script (Windows)
 
 echo Starting CC-Web Server...
 echo.
 
-REM 设置环境变量
+REM Set environment variables
 set AUTH_TOKEN=test-token-123
 set PORT=3002
 set CLAUDE_PROJECTS_DIR=%USERPROFILE%\.claude\projects
@@ -16,5 +16,5 @@ echo   Auth Token: %AUTH_TOKEN%
 echo   Projects Dir: %CLAUDE_PROJECTS_DIR%
 echo.
 
-REM 启动服务
+REM Start service
 npm run dev:server

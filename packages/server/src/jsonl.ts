@@ -37,24 +37,51 @@ export function parseJsonl(content: string): Message[] {
       // Handle user messages: type="user" with message.content
       if (parsed.type === 'user' && parsed.message?.content) {
         let content: string;
+        let messageType: 'text' | 'tool_result' | 'system_message' = 'text';
+        let metadata: any = undefined;
+        const images: any[] = [];
+        const documents: any[] = [];
 
         if (typeof parsed.message.content === 'string') {
           content = parsed.message.content;
+
+          // Check if it's a system message
+          if (content.includes('<command-message>') ||
+              content.includes('<local-command-caveat>') ||
+              content.includes('<command-name>') ||
+              content.includes('<system-reminder>')) {
+            messageType = 'system_message';
+          }
         } else if (Array.isArray(parsed.message.content)) {
-          // message.content can be an array (e.g., tool_result)
-          // Skip tool-related messages, only extract text
+          // message.content can be an array (e.g., tool_result, images, documents)
           const textParts: string[] = [];
+          let hasToolResult = false;
+
           for (const item of parsed.message.content) {
             if (typeof item === 'string') {
               textParts.push(item);
-            } else if (typeof item === 'object' && item.type === 'text' && item.text) {
-              textParts.push(item.text);
+            } else if (typeof item === 'object') {
+              if (item.type === 'text' && item.text) {
+                textParts.push(item.text);
+              } else if (item.type === 'tool_result') {
+                hasToolResult = true;
+                messageType = 'tool_result';
+                textParts.push(item.content || JSON.stringify(item));
+                metadata = {
+                  toolName: 'tool',
+                  toolOutput: item.content,
+                  isError: item.is_error || false,
+                };
+              } else if (item.type === 'image') {
+                images.push(item);
+              } else if (item.type === 'document') {
+                documents.push(item);
+              }
             }
-            // Skip tool_result, tool_use, and other non-text types
           }
 
-          if (textParts.length === 0) {
-            // No actual user text, skip this message
+          if (textParts.length === 0 && images.length === 0 && documents.length === 0) {
+            // No content, skip this message
             continue;
           }
           content = textParts.join('\n\n');
@@ -62,12 +89,11 @@ export function parseJsonl(content: string): Message[] {
           content = JSON.stringify(parsed.message.content);
         }
 
-        // Skip system/command messages (contain XML tags like <command-message>)
-        if (content.includes('<command-message>') ||
-            content.includes('<local-command-caveat>') ||
-            content.includes('<command-name>') ||
-            content.includes('<system-reminder>')) {
-          continue;
+        // Add images and documents to metadata
+        if (images.length > 0 || documents.length > 0) {
+          if (!metadata) metadata = {};
+          if (images.length > 0) metadata.images = images;
+          if (documents.length > 0) metadata.documents = documents;
         }
 
         messages.push({
@@ -75,6 +101,8 @@ export function parseJsonl(content: string): Message[] {
           content,
           timestamp: parseTimestamp(parsed.timestamp),
           model: parsed.message.model,
+          type: messageType,
+          metadata,
         });
         continue;
       }
@@ -85,21 +113,46 @@ export function parseJsonl(content: string): Message[] {
           ? parsed.message.content
           : [parsed.message.content];
 
-        // Extract text from content array
-        const textParts: string[] = [];
+        // Process each content block separately to preserve thinking/tool_use
         for (const item of contentArray) {
-          if (typeof item === 'object' && item.type === 'text' && item.text) {
-            textParts.push(item.text);
-          }
-        }
+          if (typeof item !== 'object') continue;
 
-        if (textParts.length > 0) {
-          messages.push({
-            role: 'assistant',
-            content: textParts.join('\n\n'),
-            timestamp: parseTimestamp(parsed.timestamp),
-            model: parsed.message.model,
-          });
+          // Text blocks
+          if (item.type === 'text' && item.text) {
+            messages.push({
+              role: 'assistant',
+              content: item.text,
+              timestamp: parseTimestamp(parsed.timestamp),
+              model: parsed.message.model,
+              type: 'text',
+            });
+          }
+
+          // Thinking blocks
+          if (item.type === 'thinking' && item.thinking) {
+            messages.push({
+              role: 'assistant',
+              content: item.thinking,
+              timestamp: parseTimestamp(parsed.timestamp),
+              model: parsed.message.model,
+              type: 'thinking',
+            });
+          }
+
+          // Tool use blocks
+          if (item.type === 'tool_use' && item.name) {
+            messages.push({
+              role: 'assistant',
+              content: `Tool: ${item.name}`,
+              timestamp: parseTimestamp(parsed.timestamp),
+              model: parsed.message.model,
+              type: 'tool_use',
+              metadata: {
+                toolName: item.name,
+                toolInput: item.input,
+              },
+            });
+          }
         }
         continue;
       }

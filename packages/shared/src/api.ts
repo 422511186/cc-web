@@ -18,6 +18,7 @@ export interface ProjectsResponse {
 export interface SessionsResponse {
   sessions: Array<{
     id: string;
+    projectId: string;
     title: string;
     createdAt: number;
     updatedAt: number;
@@ -32,11 +33,19 @@ export interface SessionDetailResponse {
     title: string;
     createdAt: number;
     updatedAt: number;
+    messageCount: number;
     messages: Array<{
       role: 'user' | 'assistant' | 'system';
       content: string;
       timestamp: number;
       model?: string;
+      type?: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'system_message';
+      metadata?: {
+        toolName?: string;
+        toolInput?: any;
+        toolOutput?: any;
+        isError?: boolean;
+      };
     }>;
   };
 }
