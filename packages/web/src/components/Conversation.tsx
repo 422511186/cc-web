@@ -411,6 +411,7 @@ export function Conversation({ apiClient, projectId, sessionId }: ConversationPr
       display: 'flex',
       flexDirection: 'column',
       position: 'relative',
+      overflow: 'hidden',
     }}>
       <div className="message-header" style={{
         padding: '1.25rem 2rem',
