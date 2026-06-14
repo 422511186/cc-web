@@ -1,0 +1,17 @@
+{
+  "name": "cc-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:server": "npm run dev --workspace @cc-web/server",
+    "dev:web": "npm run dev --workspace @cc-web/web"
+  }
+}
