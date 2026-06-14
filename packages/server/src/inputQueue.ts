@@ -1,0 +1,53 @@
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+
+/**
+ * 一个异步队列,实现 AsyncIterable<SDKUserMessage>。
+ * push() 追加一条用户消息;close() 结束迭代。
+ * 消费端(SDK)在队列空时挂起,直到有新消息或被关闭。
+ */
+export class InputQueue implements AsyncIterable<SDKUserMessage> {
+  private buffer: SDKUserMessage[] = [];
+  private waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(text: string): void {
+    if (this.closed) return;
+    const msg = {
+      type: "user",
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    } as SDKUserMessage;
+    if (this.waiting) {
+      const w = this.waiting;
+      this.waiting = null;
+      w({ value: msg, done: false });
+    } else {
+      this.buffer.push(msg);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiting) {
+      const w = this.waiting;
+      this.waiting = null;
+      w({ value: undefined as never, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        if (this.buffer.length > 0) {
+          return Promise.resolve({ value: this.buffer.shift()!, done: false });
+        }
+        if (this.closed) {
+          return Promise.resolve({ value: undefined as never, done: true });
+        }
+        return new Promise((resolve) => {
+          this.waiting = resolve;
+        });
+      },
+    };
+  }
+}
