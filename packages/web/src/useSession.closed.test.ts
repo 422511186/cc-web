@@ -33,4 +33,38 @@ describe('useSession - closed event', () => {
     expect(result.current.status).toBe('idle');
     expect(result.current.connected).toBe(false);
   });
+
+  test('收到 closed 事件后暴露 closed=true 与 closedReason', () => {
+    const { result } = renderHook(() => useSession('run-123'));
+
+    expect(result.current.closed).toBe(false);
+    expect(result.current.closedReason).toBe(null);
+
+    act(() => {
+      const es = vi.mocked(global.EventSource).mock.results[0].value;
+      es.onmessage?.({ data: JSON.stringify({ type: 'closed', reason: 'detached' }) } as MessageEvent);
+    });
+
+    expect(result.current.closed).toBe(true);
+    expect(result.current.closedReason).toBe('detached');
+  });
+
+  test('重连(onopen)后 closed 复位为 false', () => {
+    const { result } = renderHook(() => useSession('run-123'));
+
+    act(() => {
+      const es = vi.mocked(global.EventSource).mock.results[0].value;
+      es.onmessage?.({ data: JSON.stringify({ type: 'closed', reason: 'detached' }) } as MessageEvent);
+    });
+    expect(result.current.closed).toBe(true);
+
+    // 模拟(重)连接成功:整段重放前先复位
+    act(() => {
+      const es = vi.mocked(global.EventSource).mock.results[0].value;
+      es.onopen?.({} as Event);
+    });
+
+    expect(result.current.closed).toBe(false);
+    expect(result.current.closedReason).toBe(null);
+  });
 });

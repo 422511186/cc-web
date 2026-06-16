@@ -48,6 +48,8 @@ let sessionState: {
   status: 'idle' | 'executing' | 'waiting';
   model: string | null;
   effort: string | null;
+  closed: boolean;
+  closedReason: string | null;
 };
 beforeEach(() => {
   sessionState = {
@@ -58,6 +60,8 @@ beforeEach(() => {
     status: 'idle',
     model: null,
     effort: null,
+    closed: false,
+    closedReason: null,
   };
 });
 vi.mock('./useSession', () => ({
@@ -325,6 +329,16 @@ describe('App 执行状态与模型展示', () => {
     await enterActiveSession();
     expect(screen.getByText(/模型:\s*claude-opus-4-8/)).toBeInTheDocument();
     expect(screen.getByText(/强度:\s*high/)).toBeInTheDocument();
+  });
+
+  test('closed=true(detached) 时状态栏显示「已结束」而非「连接中…」', async () => {
+    // 服务端优雅分离:connected=false 且已收到 closed 事件
+    sessionState.connected = false;
+    sessionState.closed = true;
+    sessionState.closedReason = 'detached';
+    await enterActiveSession();
+    expect(screen.queryByText('连接中…')).not.toBeInTheDocument();
+    expect(screen.getByText('已结束')).toBeInTheDocument();
   });
 });
 

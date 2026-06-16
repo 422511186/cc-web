@@ -26,6 +26,10 @@ export interface SessionState {
   model: string | null;
   /** 推理强度;SDK 输出流不携带,通常为 null(不可用) */
   effort: string | null;
+  /** 会话是否已收到 closed 事件而终结(分离/中止/退出/空闲) */
+  closed: boolean;
+  /** closed 的原因;未结束为 null */
+  closedReason: string | null;
 }
 
 function tokenParam(): string {
@@ -42,6 +46,8 @@ export function useSession(runId: string | null): SessionState {
   const [status, setStatus] = useState<"idle" | "executing" | "waiting">("idle");
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
+  const [closed, setClosed] = useState(false);
+  const [closedReason, setClosedReason] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   const apply = useCallback((event: ServerEvent) => {
@@ -125,6 +131,8 @@ export function useSession(runId: string | null): SessionState {
       case "closed":
         setConnected(false);
         setStatus("idle");
+        setClosed(true);
+        setClosedReason(event.reason ?? null);
         break;
     }
   }, []);
@@ -157,6 +165,8 @@ export function useSession(runId: string | null): SessionState {
         setStatus("idle");
         setModel(null);
         setEffort(null);
+        setClosed(false);
+        setClosedReason(null);
         setConnected(true);
       };
       es.onmessage = (e) => {
@@ -188,5 +198,5 @@ export function useSession(runId: string | null): SessionState {
     };
   }, [runId, apply]);
 
-  return { messages, pending, connected, error, status, model, effort };
+  return { messages, pending, connected, error, status, model, effort, closed, closedReason };
 }

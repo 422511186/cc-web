@@ -124,7 +124,7 @@ function App() {
     return () => window.removeEventListener('beforeunload', onUnload);
   }, []);
 
-  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort } = useSession(runId);
+  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed, closedReason } = useSession(runId);
 
   // Restore session from URL on mount
   useEffect(() => {
@@ -361,7 +361,7 @@ function App() {
                   width: 8, height: 8, borderRadius: '50%',
                   backgroundColor: connected ? '#1f883d' : '#bbb',
                 }} />
-                {connected ? '已连接' : runId ? '连接中…' : '未连接'}
+                {connected ? '已连接' : closed ? '已结束' : runId ? '连接中…' : '未连接'}
               </span>
               {runId && (
                 <span style={{
