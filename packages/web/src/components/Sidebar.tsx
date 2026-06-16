@@ -7,13 +7,14 @@ interface SidebarProps {
   onSessionSelect: (projectId: string, sessionId: string) => void;
   selectedSessionId?: string;
   onNewSession?: (cwd: string) => void;
+  /** 项目列表加载完成后上报给父组件(供顶栏展示正确的项目名) */
+  onProjectsLoad?: (projects: Project[]) => void;
 }
 
-export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSession }: SidebarProps) {
+export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSession, onProjectsLoad }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, Session[]>>({});
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
-  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
   const handleNewClick = () => {
@@ -33,6 +34,7 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
       setLoading(true);
       const response = await apiClient.listProjects();
       setProjects(response.projects);
+      onProjectsLoad?.(response.projects);
 
       // 自动展开第一个项目（如果有）
       if (response.projects.length > 0) {

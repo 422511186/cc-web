@@ -37,6 +37,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('Conversation 项目名展示', () => {
+  test('传入 projectName 时应展示真实项目名(不自动从 projectId 推导)', async () => {
+    const getSession = vi
+      .fn()
+      .mockResolvedValue(makeSession([{ role: 'user', content: '测试', timestamp: Date.now() }]));
+
+    const apiClient = makeApiClient(getSession);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="C--Users-huang-workspace-cc-web-develop"
+        sessionId="s1"
+        projectName="cc-web-develop"
+      />
+    );
+
+    await waitFor(() => screen.getByText('cc-web-develop'));
+    expect(screen.queryByText('develop')).toBeNull();
+  });
+});
+
 describe('Conversation 续聊活跃时不被文件刷新重复合并', () => {
   test('liveMessages 有值时,session-update 不再重新拉取并合并历史', async () => {
     const getSession = vi

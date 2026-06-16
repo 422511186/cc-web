@@ -13,6 +13,8 @@ interface ConversationProps {
   apiClient: ApiClient;
   projectId: string;
   sessionId: string;
+  /** 项目名(可选,用于顶栏展示;不传则从 projectId 推导,但对含连字符的名字会有损) */
+  projectName?: string;
   /** 实时续聊:已累积的流式消息 */
   liveMessages?: LiveMessage[];
   /** 历史渲染边界:只渲染 messages.slice(0, historyBoundary),越界部分(本轮已落盘)由实时流负责,避免与全量重放重复 */
@@ -352,7 +354,7 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
-export function Conversation({ apiClient, projectId, sessionId, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
+export function Conversation({ apiClient, projectId, sessionId, projectName, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -373,8 +375,8 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, hi
       ? session.messages.slice(0, historyBoundary)
       : session?.messages ?? [];
 
-  // Extract project name from projectId (e.g., "C--Users-huang-workspace-cc-web" -> "cc-web")
-  const projectName = projectId.split('-').filter(Boolean).pop() || projectId;
+  // 优先使用传入的真实项目名,避免有损解码导致 cc-web-develop → develop
+  const displayName = projectName || projectId.split('-').filter(Boolean).pop() || projectId;
 
   const loadSession = useCallback(async () => {
     try {
@@ -615,7 +617,7 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, hi
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#333' }}>
-            {projectName}
+            {displayName}
           </h2>
           <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.375rem' }}>
             {new Date(session.updatedAt).toLocaleString('zh-CN', {

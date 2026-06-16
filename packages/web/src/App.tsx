@@ -9,7 +9,7 @@ import { useSession } from './useSession';
 import { startNew, startContinue, sendMessage, respond, closeSession, abortSession } from './chatApi';
 import { createApiClient } from './api';
 import type { ApiClient } from './api';
-import type { PromptAnswer, PendingPrompt } from '@cc-web/shared';
+import type { PromptAnswer, PendingPrompt, Project } from '@cc-web/shared';
 import type { LiveMessage } from './useSession';
 import { QuestionCard } from './components/QuestionCard';
 import { PermissionCard } from './components/PermissionCard';
@@ -88,6 +88,8 @@ function App() {
   const [continueError, setContinueError] = useState<string | null>(null);
   const [abortSuccess, setAbortSuccess] = useState(false);
   const [alertDialog, setAlertDialog] = useState<{ title: string; message: string } | null>(null);
+  // 已加载的项目列表(由 Sidebar 上报),用于把正确的项目名传给 Conversation 顶栏
+  const [projects, setProjects] = useState<Project[]>([]);
 
   // 跟踪当前活跃 runId,供切换/卸载时主动释放旧会话(忙碌则后台保活待重连)
   const runIdRef = useRef<string | null>(null);
@@ -270,6 +272,7 @@ function App() {
               onSessionSelect={handleSessionSelect}
               selectedSessionId={selectedSession?.sessionId}
               onNewSession={handleNewWithCwd}
+              onProjectsLoad={setProjects}
             />
           </div>
           <div style={{
@@ -403,6 +406,7 @@ function App() {
                   apiClient={apiClient!}
                   projectId={selectedSession.projectId}
                   sessionId={selectedSession.sessionId}
+                  projectName={projects.find(p => p.id === selectedSession.projectId)?.name}
                   liveMessages={runId ? liveMessages : undefined}
                   historyBoundary={runId ? boundaries.get(selectedSession.sessionId) : undefined}
                   onHistoryLoaded={handleHistoryLoaded}
