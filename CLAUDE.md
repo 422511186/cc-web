@@ -165,3 +165,47 @@ TS 项目引用（project references）：server/web 的 `tsconfig.json` 都 `re
 - 解析历史/读图片时只读 `CLAUDE_PROJECTS_DIR` / imageCacheDir 下文件，注意防目录穿越。
 - 改动 shared 类型后记得 `npm run build`（或至少构建 shared），否则 server/web 拿到的是旧类型。
 - “请求很慢”先查端口冲突：游离 Vite 进程可能占住后端 3002（IPv6 `::1`），先 `netstat` 排查，别先怀疑 SDK。
+
+## 文档维护规则
+
+**⚠️ 重要：需求变更或新增功能后，必须检查并更新相关文档。**
+
+任何代码变更完成后，检查是否需要同步更新以下文档：
+
+1. **CLAUDE.md**（本文档）：
+   - 新增/修改 API 路由 → 更新「架构」或「前后端通信」章节
+   - 新增环境变量 → 更新「常用命令」中的环境变量表
+   - 架构调整（新增模块、重命名） → 更新「架构」章节
+   - 新增注意事项/坑点 → 补充到「注意事项」
+
+2. **docs/TECH-DEBT.md**（技术债务）：
+   - 修复 P0/P1/P2 问题 → 标注已修复或删除对应条目
+   - 发现新的 bug/边界条件 → 新增条目
+   - 完成改进项 → 从列表中移除
+
+3. **docs/superpowers/specs/DESIGN-EVOLUTION.md**（设计演进）：
+   - 重大架构调整（如改变生命周期机制、事件类型） → 新增演进记录
+   - 实现了「未实现功能」（如 DiffBuilder） → 更新状态
+   - 术语变更 → 更新术语对照表
+
+4. **docs/superpowers/specs/2026-06-14-cc-web-design.md**（总体设计）：
+   - 新增功能超出原设计范围 → 补充到相关章节
+   - 配置项变更 → 更新第 7 节配置表
+
+5. **docs/superpowers/specs/2026-06-14-cc-web-realtime-conversation-design.md**（实时续聊设计）：
+   - 修改 SSE 事件类型 → 更新第 10 节
+   - API 路径变更 → 更新第 9 节
+
+**强制规则**：
+- 代码变更 PR 合并前，必须完成相关文档更新
+- 如无法确定是否需要更新，默认更新（宁可冗余，不可遗漏）
+- 文档更新应包含在同一个 commit 中，提交信息注明「docs: 同步更新 xxx 文档」
+
+**检查清单**（变更后自查）：
+- [ ] 是否新增/修改了 API 路由？ → 更新 CLAUDE.md + 设计文档
+- [ ] 是否新增/修改了环境变量？ → 更新 CLAUDE.md 环境变量表
+- [ ] 是否调整了架构/模块命名？ → 更新 CLAUDE.md + DESIGN-EVOLUTION.md
+- [ ] 是否修复了 TECH-DEBT.md 中的问题？ → 标注或删除对应条目
+- [ ] 是否发现了新的技术债务？ → 补充到 TECH-DEBT.md
+- [ ] 是否实现了「未实现功能」？ → 更新 DESIGN-EVOLUTION.md 状态
+- [ ] 是否修改了 SSE 事件类型或前后端契约？ → 更新实时续聊设计文档

@@ -1,8 +1,11 @@
 # cc-web 实时续聊与确认交互设计
 
-- 日期: 2026-06-14
-- 状态: 已根据原型反馈确认
+- 日期: 2026-06-14（初版）
+- 最后更新: 2026-06-16（实现后澄清）
+- 状态: ✅ 已实现，文档已根据实际代码更新
 - 原型: `.superpowers/brainstorm/4760-1781450740/content/cc-web-prototype.html`
+
+> **重要**: 本文档描述的架构已全面实现，但部分模块命名、API 路径、事件类型与初版设计有差异。详见 [DESIGN-EVOLUTION.md](./DESIGN-EVOLUTION.md) 设计演进记录。
 
 ## 1. 目标
 
@@ -35,35 +38,44 @@
 
 ## 4. 架构
 
+> **实际实现**: 模块命名与设计文档有差异，见下方标注。
+
 ```text
 React Web
   | REST: 发消息 / 提交交互结果
-  | SSE: 回复流 / 工具事件 / 待确认卡片 / diff
+  | SSE: 回复流 / 工具事件 / 待答卡片
   v
 Node Express
-  - SessionStore: 历史 JSONL 读取
-  - ClaudeSessionManager: Agent SDK 会话运行
-  - InteractionManager: 权限和 Ask 挂起/恢复
-  - DiffBuilder: 生成结构化 diff
+  - SessionStore: 历史 JSONL 读取 ✓
+  - SessionManager: 活跃会话池管理（实际命名，非 ClaudeSessionManager）
+  - PendingRegistry: 待答项登记表（实际命名，非 InteractionManager）
+  - Hub: 事件中枢（append-only 日志 + 60s 宽限 + 整段重放）
+  - [DiffBuilder: ❌ 未实现，权限卡片仅显示参数摘要]
   v
 Claude Code Agent SDK
   v
 本地 Claude Code 进程
 ```
 
-后端继续直接读取历史 JSONL。实时续聊时，后端用 Agent SDK `query()` resume 原 session，并把前端输入通过 async iterable 送入 SDK。
+后端继续直接读取历史 JSONL。实时续聊时，后端用 Agent SDK resume 原 session，并把前端输入通过 async iterable (`InputQueue`) 送入 SDK。
 
 ## 5. 历史会话继续提问
+
+> **实际实现**: 续聊时 `runId` 复用原 `sessionId`，URL 路径使用 `runId` 而非 `sessionId`。
 
 用户打开历史 session 后看到完整历史消息。底部输入框始终显示。
 
 发送第一条新消息时：
 
-1. 前端调用 `POST /api/sessions/:sessionId/message`，附带 `projectId` 和用户输入。
-2. 后端发现该 session 没有运行中的 runner，自动创建 runner。
-3. runner 使用 Agent SDK resume 原 `sessionId`，并设置原项目工作目录。
-4. 用户消息写入 runner 输入队列。
-5. SDK 输出通过 SSE 推回当前 Conversation。
+1. 前端调用 `POST /api/sessions/:sessionId/continue`（带 `projectId`），后端返回 `{runId: sessionId}`（**续聊时 runId 复用 sessionId**）
+2. 后端 `SessionManager.startContinue()` 创建活跃会话，使用 Agent SDK resume 原 sessionId，并设置原项目工作目录
+3. 前端建立 SSE 连接：`GET /api/sessions/:runId/stream`，订阅流式输出
+4. 前端发送消息：`POST /api/sessions/:runId/message`（带 `text` + 可选 `attachments`）
+5. 用户消息写入 `InputQueue`（async iterable），SDK 消费并输出通过 SSE 推回前端
+
+**关键机制**: 
+- **Hub 整段重放**: 前端切走再切回时，SSE 重连会重放完整事件日志（`hub.log`），保证状态完整
+- **resetHub 碰撞防护**: 续聊前清掉上一轮残留 Hub（含旧 `closed` 事件），避免重放出旧终态
 
 前端可以在历史消息和新消息之间显示一条轻量分隔线：
 
@@ -86,17 +98,24 @@ Claude Code Agent SDK
 
 ## 7. Diff 视图
 
-MVP 采用 unified diff，不做 split diff。
+> **实际状态**: ❌ **未实现**。权限卡片仅显示工具参数摘要（如文件路径、命令），不生成实时 diff。
 
-支持来源：
+**原设计**: MVP 采用 unified diff，不做 split diff。
 
+**计划支持来源**：
 - `Edit`: 从 `old_string` / `new_string` 生成局部 diff。
 - `MultiEdit`: 每个 edit 生成 hunk，按文件合并展示。
 - `Write`: 若能读取旧文件，则展示旧内容到新内容的 diff；若是新文件，展示新增文件 diff。
 
 暂不解析普通 `Bash` 输出中的 diff；`Bash` 仍按工具日志展示。
 
-前端组件：
+**当前实现**:
+- `DiffView.tsx` 组件存在，但仅用于展示**历史 JSONL 中已有的 diff 信息**（由 CLI 生成并记录的）
+- 权限确认时，前端通过 `summarizeInput()` 函数只显示工具参数摘要（`session.ts:276-288`）
+
+**影响**: 用户在权限确认前无法预览具体代码改动，需凭借文件路径与工具名判断风险。
+
+**后续计划**: 见 `docs/TECH-DEBT.md` 第三阶段优化。
 
 - `DiffViewer`: 接收文件 diff 列表，按文件展示 additions/deletions。
 - 桌面端默认可展开完整 hunks。
@@ -105,36 +124,62 @@ MVP 采用 unified diff，不做 split diff。
 
 ## 8. 后端模块
 
-### ClaudeSessionManager
+> **实际实现**: 模块命名与职责与设计有差异，见下方标注。
+
+### SessionManager（实际命名，设计文档称 ClaudeSessionManager）
 
 职责：
 
-- 管理运行中的 Claude runner。
-- 按 `sessionId` resume 历史会话。
-- 创建新会话。
-- 维护用户输入 async queue。
-- 将 SDK 输出转换成 Web SSE 事件。
-- 处理 runner 崩溃、结束、空闲超时。
+- 管理运行中的活跃会话池（`Map<runId, {session, timer}>`）
+- 并发控制（`maxConcurrent`，默认 4）与空闲超时（`idleTimeoutMs`，默认 3 分钟）
+- 按 `sessionId` resume 历史会话（`startContinue`，**runId 复用 sessionId**）
+- 创建新会话（`startNew`，runId 为随机 UUID）
+- 维护用户输入 async queue（`InputQueue`）
+- 将 SDK 输出转换成 SSE 事件（`ServerEvent`）
+- 处理会话结束、空闲超时、强制中止
+- **三种释放语义**: `release()`（忙碌保活/空闲回收）、`detach()`（优雅分离）、`close()`（强制中止）
 
-### InteractionManager
-
-职责：
-
-- 管理 pending interactions。
-- 为权限确认、AskUserQuestion、计划审批生成 `interactionId`。
-- SSE 推送 interaction 卡片。
-- 接收前端 respond 请求后 resolve 对应 Promise。
-- 超时或 session 结束时清理 pending 状态。
-
-### DiffBuilder
+### PendingRegistry（实际命名，设计文档称 InteractionManager）
 
 职责：
 
-- 从 Agent SDK 工具 input/result 生成结构化 diff。
-- 隔离文件读取逻辑，避免前端理解工具 JSON。
-- 控制 diff 大小，避免超大文件拖垮前端。
+- 管理待答项（`PendingPrompt`）的注册与解决
+- 为权限确认、AskUserQuestion、计划审批生成唯一 `id`
+- 通过 SSE 推送 `PromptEvent`（含待答卡片数据）
+- 接收前端 `POST /api/sessions/:runId/respond` 后 `settle(id, answer)` 解决对应 Promise
+- 超时或 session 结束时 `rejectAll()` 清理 pending 状态
+
+### Hub 事件中枢（设计文档未提及的核心机制）
+
+每个 `runId` 在 `chatRoutes.ts` 中维护一个 Hub：
+
+```typescript
+interface Hub {
+  log: ServerEvent[];        // 全量事件日志（append-only，直到宽限期到期）
+  channel: SSEChannel | null; // 当前 SSE 连接
+  closed: boolean;           // 是否已收到 closed 事件
+  graceTimer: NodeJS.Timeout | null; // 60 秒宽限清理计时器
+}
+```
+
+职责：
+- 所有 `ServerEvent` 追加到 `log`，供前端重连时**整段重放**
+- 实时有连接时双通道推送（`channel.send` + `log.push`）
+- 会话结束后保留 60 秒宽限期（`HUB_GRACE_MS`）
+- **`resetHub(sessionId)`**: 续聊前清掉旧 Hub，避免重放出旧 `closed` 事件
+
+### ❌ DiffBuilder（未实现）
+
+**设计职责**：
+- 从 Agent SDK 工具 input/result 生成结构化 diff
+- 隔离文件读取逻辑，避免前端理解工具 JSON
+- 控制 diff 大小，避免超大文件拖垮前端
+
+**实际状态**: 未实现，权限卡片通过 `summarizeInput()` 仅显示参数摘要。
 
 ## 9. API
+
+> **实际实现**: 路径参数使用 `runId`（运行时标识）而非 `sessionId`，`interactionId` 在请求体而非 URL。
 
 保留现有 API：
 
@@ -143,54 +188,158 @@ GET /api/projects
 GET /api/projects/:projectId/sessions
 GET /api/sessions/:sessionId?projectId=
 GET /api/search?q=
-GET /api/events
+GET /api/events                               # 浏览用 SSE（文件变更推送）
 GET /api/image?path=
+DELETE /api/projects/:projectId/sessions/:sessionId  # 删除历史会话
 ```
 
-新增 API：
+新增 API（实时续聊）：
 
 ```text
-POST /api/sessions/new
-POST /api/sessions/:sessionId/continue
-POST /api/sessions/:sessionId/message
-POST /api/sessions/:sessionId/interactions/:interactionId/respond
-GET  /api/sessions/:sessionId/stream
+POST /api/sessions/new                        # 新建，返回 {runId: UUID}
+POST /api/sessions/:sessionId/continue        # 续聊，返回 {runId: sessionId}（runId 复用）
+POST /api/sessions/:runId/message             # 发送消息（text + 可选 attachments）
+POST /api/sessions/:runId/respond             # 提交答案（interactionId 在请求体）
+POST /api/sessions/:runId/abort               # 强制中止执行
+DELETE /api/sessions/:runId                   # 释放会话（忙碌保活 / 空闲回收）
+GET  /api/sessions/:runId/stream              # SSE 流式输出（重连整段重放）
+POST /api/uploads                             # 上传附件，返回 {ref, filename}
 ```
 
-说明：
-
-- MVP 可以先复用现有 `/api/events`，通过 typed event 区分 session。
-- 后续如需要减少无关推送，再引入 per-session `/stream`。
+**关键差异**:
+- 路径参数：续聊入口用 `sessionId`，运行时操作用 `runId`
+- `respond` 路径简化：`/sessions/:runId/respond`（无 `/interactions/:id` 嵌套），`interactionId` 在请求体
+- 新增 `abort` / `uploads` / `DELETE /sessions/:runId`
 
 ## 10. SSE 事件类型
 
-事件需要在 shared 包中定义，避免前后端契约漂移。
+> **实际实现**: 事件类型与设计完全不同，详见 `packages/shared/src/events.ts`。
 
-```ts
-type RealtimeEvent =
-  | { type: 'assistant_delta'; sessionId: string; content: string }
-  | { type: 'assistant_message'; sessionId: string; message: Message }
-  | { type: 'tool_started'; sessionId: string; toolCall: ToolCallSummary }
-  | { type: 'tool_finished'; sessionId: string; toolCallId: string; result: ToolResultSummary }
-  | { type: 'interaction_requested'; sessionId: string; interaction: InteractionCard }
-  | { type: 'interaction_resolved'; sessionId: string; interactionId: string; result: InteractionResult }
-  | { type: 'session_error'; sessionId: string; error: string }
-  | { type: 'session_done'; sessionId: string };
+**关键差异**:
+- 所有事件**不携带 `sessionId`**（通过 SSE URL `/sessions/:runId/stream` 隐式绑定）
+- 事件粒度更细，拆分流式增量与块级落定
+- 新增状态机事件与用户消息回显
+
+### 实际事件类型
+
+```typescript
+export type ServerEvent =
+  | UserMessageEvent        // 用户消息回显（重连后仍可见自己发的消息）
+  | DeltaEvent              // 流式增量（逐字追加）
+  | BlockEvent              // 完整块落定（text/thinking/tool_use）
+  | ToolResultEvent         // 工具执行结果
+  | PromptEvent             // 待答事项（question/permission/plan）
+  | TurnEndEvent            // 一轮对话结束
+  | ErrorEvent              // 会话错误
+  | ClosedEvent             // 会话终结（idle/aborted/exited/detached）
+  | StatusEvent             // 状态机（idle/executing/waiting）
+  | RunInfoEvent;           // 模型与推理强度信息
 ```
+
+### 事件详细说明
+
+**UserMessageEvent**
+```typescript
+{ type: 'user_message', text: string }
+```
+用户发送的消息由后端回显进事件流，使重连时仍能看到自己发出的消息。
+
+**DeltaEvent**（流式增量）
+```typescript
+{ type: 'delta', text: string }
+```
+Assistant 回复的逐字追加片段，前端累加到当前消息的 `streaming` 字段。
+
+**BlockEvent**（块级落定）
+```typescript
+{
+  type: 'block',
+  block:
+    | { kind: 'text', text: string }
+    | { kind: 'thinking', text: string }
+    | { kind: 'tool_use', name: string, input: unknown, toolUseId: string }
+}
+```
+一个完整内容块到达。`text` 块落定时前端应清空 `streaming`（它就是这块的最终文本）。
+
+**ToolResultEvent**
+```typescript
+{ type: 'tool_result', toolUseId: string, text: string, isError: boolean }
+```
+工具执行结果。
+
+**PromptEvent**（待答事项）
+```typescript
+{ type: 'prompt', prompt: PendingPrompt }
+
+type PendingPrompt =
+  | QuestionPrompt    // { kind: 'question', id, questions[] }
+  | PermissionPrompt  // { kind: 'permission', id, toolName, title, detail }
+  | PlanPrompt;       // { kind: 'plan', id, plan }
+```
+Claude 抛出需要用户决策的交互事项。前端渲染对应卡片，用户操作后 `POST /respond`。
+
+**TurnEndEvent**
+```typescript
+{ type: 'turn_end', isError: boolean }
+```
+一轮对话结束（可继续输入）。
+
+**StatusEvent**（状态机）
+```typescript
+{ type: 'status', state: 'idle' | 'executing' | 'waiting' }
+```
+明确表达当前状态：
+- `idle`: 空闲，可发下一条消息
+- `executing`: 执行中，正在处理
+- `waiting`: 等待你回答待答项
+
+**ClosedEvent**
+```typescript
+{ type: 'closed', reason: 'idle' | 'aborted' | 'exited' | 'detached' }
+```
+会话已终结。`detached` 表示优雅分离（不 abort，后台跑完）。
+
+**RunInfoEvent**
+```typescript
+{ type: 'run_info', model?: string, effort?: string }
+```
+当前活跃 run 的模型信息。注意：`effort` 通常缺失（SDK 输出流不携带）。
+
+### 与设计文档的对比
+
+| 设计文档事件 | 实际实现 | 说明 |
+|------------|---------|------|
+| `assistant_delta` | `DeltaEvent` | 无 sessionId，字段名 `text` 而非 `content` |
+| `assistant_message` | `BlockEvent` | 拆分为块级事件，不是完整 message |
+| `tool_started` | ❌ 无对应事件 | 工具开始时不单独通知 |
+| `tool_finished` | `ToolResultEvent` | 无 sessionId |
+| `interaction_requested` | `PromptEvent` | 术语改为 prompt，无 sessionId |
+| `interaction_resolved` | ❌ 无对应事件 | 前端自行管理已回答状态 |
+| `session_error` | `ErrorEvent` | 无 sessionId |
+| `session_done` | `ClosedEvent` | 增加 reason 字段区分终结原因 |
+| ❌ 无 | `UserMessageEvent` | 新增：用户消息回显 |
+| ❌ 无 | `TurnEndEvent` | 新增：轮次边界 |
+| ❌ 无 | `StatusEvent` | 新增：状态机 |
+| ❌ 无 | `RunInfoEvent` | 新增：模型元信息 |
 
 ## 11. 前端组件
 
+> **实际实现**: 部分组件未按设计拆分，逻辑保留在 `Conversation.tsx` 内。
+
 新增或拆分组件：
 
-- `Composer`: 底部输入框、发送状态、附件入口。
-- `InteractionCard`: 根据 interaction kind 渲染权限、Ask、计划审批。
-- `PermissionCard`: 工具权限确认，内含 diff 摘要和按钮。
-- `AskUserQuestionCard`: 单选/多选问题。
-- `PlanApprovalCard`: 计划审批。
-- `DiffViewer`: unified diff。
-- `ToolEvent`: 折叠工具事件。
+- ✅ `Composer.tsx`: 底部输入框、发送状态、附件上传（📎 按钮 + 预览）
+- ❌ `InteractionCard`: 未创建，`Conversation.tsx` 内联判断 `prompt.kind` 并渲染对应卡片
+- ✅ `QuestionCard.tsx`: 单选/多选问题卡片
+- ✅ `PermissionCard.tsx`: 工具权限确认，显示工具名、参数摘要、允许/拒绝按钮（**无 diff**）
+- ✅ `PlanCard.tsx`: 计划审批卡片
+- ⚠️ `DiffView.tsx`: 存在但仅展示历史 JSONL 中已有 diff（**不生成实时 diff**）
+- ❌ `ToolEvent`: 未单独拆分，工具事件在 `Conversation.tsx` 内渲染（折叠区块）
 
-`Conversation.tsx` 目前偏大。实现时可以先做小范围增量修改，随后按上述边界拆分。
+`Conversation.tsx` 目前仍然较大（~1000 行），包含消息流渲染、滚动逻辑、折叠区块、交互卡片内联判断等。
+
+**实现建议**: 设计阶段建议的组件边界可作为后续重构方向，当前保持功能完整优先。
 
 ## 12. 安全与局域网访问
 
@@ -201,13 +350,43 @@ type RealtimeEvent =
 - 不默认启用 `bypassPermissions`。
 - 权限卡片必须显示关键参数；文件修改必须显示 diff 或说明无法生成 diff 的原因。
 
-## 13. 错误处理
+## 13. 错误处理与生命周期
 
-- SDK runner 崩溃: SSE 推 `session_error`，前端显示可重试状态。
-- SSE 断线: 前端自动重连并重新拉取 session。
-- 用户拒绝权限: 卡片标记为已拒绝，runner 收到拒绝结果继续或终止。
-- pending interaction 超时: 卡片显示过期，后端清理 Promise。
-- diff 生成失败: 权限卡片仍显示工具参数，并提示无法生成 diff。
+> **实际实现**: 新增三种释放语义与 Hub 宽限期机制。
+
+### 会话生命周期
+
+活跃会话由 `SessionManager` 管理，支持三种释放方式：
+
+1. **release()** — 前端切走/关页面时调用（`DELETE /sessions/:runId`）
+   - 若会话**忙碌**（executing 或有待答项）→ 保留在池，后台继续跑
+   - 若会话**空闲** → 立即 `detach()` 回收资源
+
+2. **detach()** — 优雅分离
+   - 停止接收新输入，拒绝未决待答项
+   - **不发送 abort 信号**，后台任务自然跑完
+   - 发送 `closed:detached` 事件
+
+3. **close()** — 强制关闭
+   - 发送 abort 信号中止 SDK 执行
+   - 拒绝所有未决 promise
+   - 发送 `closed` 事件（reason: `idle` / `aborted` / `exited`）
+
+### Hub 宽限期
+
+会话结束后，Hub 保留 **60 秒宽限期**（`HUB_GRACE_MS`）：
+- 前端可在此期间重连并整段重放事件日志
+- 无连接时，60 秒后自动清理 Hub
+- 有连接时，宽限计时器由 SSE `onClose` 管理
+
+### 错误处理
+
+- **SDK runner 崩溃**: SSE 推 `ErrorEvent`，前端显示可重试状态
+- **SSE 断线**: 前端自动重连（浏览器原生机制，3 秒间隔），重连后整段重放 `hub.log` 恢复状态
+- **用户拒绝权限**: 卡片标记为已拒绝，`PendingRegistry.settle()` 返回拒绝结果，SDK 收到后继续或终止
+- **pending interaction 超时**: 卡片可显示过期提示，后端 `session.close()` 时 `rejectAll()` 清理
+- **空闲超时**（3 分钟无事件）: `SessionManager` 触发 `close(runId, "idle")`
+- **并发超限**: `startNew` / `startContinue` 抛错 `max concurrent sessions reached`
 
 ## 14. 测试策略
 

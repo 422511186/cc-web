@@ -2,8 +2,9 @@
 
 将本地 Claude Code 的聊天搬上 Web,支持浏览历史并在网页(含手机)里继续对话。
 
-- 日期:2026-06-14
-- 状态:设计已确认,待评审
+- 日期:2026-06-14（初版）
+- 最后更新:2026-06-16（实现后澄清）
+- 状态:✅ 已实现，文档已根据实际代码更新
 
 ## 1. 目标与范围
 
@@ -23,9 +24,10 @@
 ### 非目标(本期不做)
 
 - 多用户 / 账号体系(仅单一密码/令牌鉴权)
-- 历史记录的编辑、删除、导出
+- 历史记录的编辑、导出（**删除已实现**: `DELETE /api/projects/:id/sessions/:sessionId`）
 - 数据库持久化(直接读 `.jsonl`)
 - 搜索索引(MVP 用内存全文扫描)
+- **Diff 生成**（权限卡片暂只显示参数摘要，不生成 Edit/Write 工具的实时 diff）
 
 ## 2. 整体架构
 
@@ -120,6 +122,8 @@ MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建
 
 ## 5. API 设计
 
+> **注**: 实际实现中，运行时路由使用 `runId`（活跃会话运行时标识），续聊时 `runId = sessionId`，新建时 `runId` 为随机 UUID。
+
 所有路由前置鉴权中间件。
 
 | 方法 | 路径 | 作用 |
@@ -127,12 +131,18 @@ MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建
 | `POST` | `/api/auth` | 用密码/令牌换取会话 cookie/JWT |
 | `GET` | `/api/projects` | 列出所有项目 |
 | `GET` | `/api/projects/:id/sessions` | 列出某项目下的 session(标题、时间、消息数) |
-| `GET` | `/api/sessions/:id` | 读取某 session 完整消息 |
+| `GET` | `/api/sessions/:id` | 读取某 session 完整消息(需带 `?projectId=`) |
 | `GET` | `/api/search?q=` | 全文搜索历史 |
-| `POST` | `/api/sessions/:id/continue` | 续聊:启动 SDK 会话 |
-| `POST` | `/api/sessions/new` | 新建对话 |
-| `GET` | `/api/sessions/:id/stream` | SSE:流式接收回复 + 待答事项 |
-| `POST` | `/api/sessions/:id/respond` | 提交答案(权限 / 选项 / 计划) |
+| `DELETE` | `/api/projects/:projectId/sessions/:sessionId` | 删除历史会话（已实现） |
+| `POST` | `/api/sessions/new` | 新建对话，返回 `{runId}` |
+| `POST` | `/api/sessions/:sessionId/continue` | 续聊（runId 复用 sessionId），需带 `projectId` 定位原工作目录 |
+| `GET` | `/api/sessions/:runId/stream` | SSE:流式接收回复 + 待答事项（**重连整段重放全量事件日志**） |
+| `POST` | `/api/sessions/:runId/message` | 发送用户消息（`text` + 可选 `attachments`） |
+| `POST` | `/api/sessions/:runId/respond` | 提交答案（权限 / 选项 / 计划），`interactionId` 在请求体中 |
+| `POST` | `/api/sessions/:runId/abort` | 强制中止执行 |
+| `DELETE` | `/api/sessions/:runId` | 释放会话（忙碌保活 / 空闲回收） |
+| `POST` | `/api/uploads` | 上传附件，返回 `{ref, filename}` |
+| `GET` | `/api/image?path=` | 读取粘贴图片（限 `CLAUDE_IMAGE_CACHE_DIR` 下） |
 
 ## 6. 前端 UI 设计
 
@@ -189,19 +199,50 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `AUTH_TOKEN` | (必填) | 单一访问密码 / 令牌 |
+| `AUTH_TOKEN` | (必填) | 单一访问密码 / 令牌；缺失则启动失败 |
 | `PERMISSION_MODE` | `"default"` | 权限模式,可选 `default` / `acceptEdits` / `bypassPermissions` 等。**非 default 为高风险,远程慎用** |
-| `PORT` | `3000` | 服务端口 |
+| `PORT` | `3000`（dev 用 3002） | 服务端口 |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | 历史记录根目录 |
-| `SESSION_IDLE_TIMEOUT` | `30m` | 常驻会话空闲超时 |
-| `MAX_CONCURRENT_SESSIONS` | (建议设上限) | 同时运行的子进程数上限 |
+| `CLAUDE_IMAGE_CACHE_DIR` | `<projects 同级>/image-cache` | 粘贴图片缓存目录 |
+| `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 活跃会话空闲超时（毫秒）；执行中/有产出则续期 |
+| `MAX_CONCURRENT_SESSIONS` | `4` | 同时运行的会话数上限；超限则新建会抛错 |
+| `UPLOADS_DIR` | `<cwd>/uploads` | 附件上传保存目录 |
 
-## 8. 错误处理
+## 8. 生命周期管理与错误处理
 
-- **子进程崩溃/退出**:SSE 推错误事件,前端显示「会话中断」,可重试。
-- **空闲超时**:超时自动回收子进程,释放资源。
-- **并发上限**:限制同时运行的子进程数,防止资源耗尽。
-- **前端**:SSE 断线自动重连,重连后拉取错过的消息;网络/发送失败给明确提示。
+### 会话生命周期
+
+活跃会话由 `SessionManager` 管理，有三种释放语义：
+
+1. **release()**：前端切走/关页面时调用（`DELETE /sessions/:runId`）
+   - 若会话**忙碌**（executing 或有待答项）→ 保留在池，后台继续跑，等待重连
+   - 若会话**空闲** → 立即 `detach()` 回收资源
+   
+2. **detach()**：优雅分离
+   - 停止接收新输入，拒绝未决待答项
+   - **不发送 abort 信号**，后台任务自然跑完
+   - 发送 `closed:detached` 事件
+   
+3. **close()**：强制关闭
+   - 发送 abort 信号中止 SDK 执行
+   - 拒绝所有未决 promise
+   - 发送 `closed` 事件（reason: `idle` / `aborted` / `exited`）
+
+### Hub 与事件重放
+
+每个 `runId` 维护一个 **Hub**（事件中枢）：
+
+- `log: ServerEvent[]`：全量事件日志，支持前端切走再切回时**整段重放**
+- `channel: SSEChannel`：当前 SSE 连接，实时推送新事件
+- `graceTimer`：会话结束后保留 **60 秒宽限期**，供重连使用
+- **`resetHub(sessionId)`**：续聊前清掉旧 Hub，避免重放出旧的 `closed` 事件（续聊复用 sessionId 作 runId 的碰撞防护）
+
+### 错误处理
+
+- **子进程崩溃/退出**：SSE 推 `error` 事件，前端显示「会话中断」，可重试
+- **空闲超时**（3 分钟无事件产出）：自动回收会话，释放资源
+- **并发上限**：限制同时运行的会话数（`MAX_CONCURRENT_SESSIONS`），防止资源耗尽
+- **前端**：SSE 断线自动重连，重连后整段重放事件日志恢复状态；网络/发送失败给明确提示
 
 ## 9. 安全
 
@@ -221,7 +262,7 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 
 ## 11. 项目结构(Monorepo)
 
-用 **npm workspaces** 组织 monorepo。核心动机:前后端共享 TypeScript 类型(stream-json 事件、API 契约、交互卡片数据结构),避免前后端定义漂移。
+用 **npm workspaces** 组织 monorepo。核心动机:前后端共享 TypeScript 类型(SSE 事件、API 契约、交互卡片数据结构),避免前后端定义漂移。
 
 ```
 cc-web/
@@ -230,25 +271,56 @@ cc-web/
 ├── packages/
 │   ├── shared/             # @cc-web/shared:共享类型与契约
 │   │   ├── src/
-│   │   │   ├── events.ts   # SSE 事件、stream-json 事件类型
+│   │   │   ├── events.ts   # SSE 事件类型（ServerEvent, PendingPrompt, PromptAnswer）
 │   │   │   ├── api.ts      # REST 请求/响应类型
-│   │   │   └── cards.ts    # 交互卡片(答题/权限/计划)数据结构
+│   │   │   └── types.ts    # 领域模型（Project, Session, Message）
 │   │   └── package.json
 │   ├── server/             # @cc-web/server:Node + Express 后端
 │   │   ├── src/
 │   │   │   ├── index.ts        # 入口 + 配置加载
+│   │   │   ├── app.ts          # Express 装配
 │   │   │   ├── auth.ts         # 鉴权中间件
+│   │   │   ├── config.ts       # 环境变量加载
+│   │   │   ├── store.ts        # JSONL 历史读取（SessionStore）
 │   │   │   ├── jsonl.ts        # JSONL 解析器
+│   │   │   ├── title.ts        # 标题提取
 │   │   │   ├── search.ts       # 全文搜索
-│   │   │   ├── sessions.ts     # SDK 会话管理(挂起—推送—恢复)
-│   │   │   └── routes.ts       # REST + SSE 路由
+│   │   │   ├── sse.ts          # 浏览用 SSE（文件变更推送）
+│   │   │   ├── watcher.ts      # 文件变更监听
+│   │   │   ├── routes.ts       # 浏览 REST + SSE 路由
+│   │   │   ├── sessionManager.ts  # 活跃会话池（并发上限 + 空闲超时）
+│   │   │   ├── session.ts      # 单个会话状态机（detach/close 区分）
+│   │   │   ├── sdk.ts          # Agent SDK 适配层
+│   │   │   ├── inputQueue.ts   # 异步输入队列（AsyncIterable）
+│   │   │   ├── pending.ts      # 待答项注册表（PendingRegistry）
+│   │   │   ├── chatRoutes.ts   # 续聊 REST + 流式 SSE（Hub 事件中枢）
+│   │   │   ├── sseChannel.ts   # SSE 连接封装
+│   │   │   └── uploads.ts      # 附件上传
 │   │   └── package.json    # 依赖 @cc-web/shared
 │   └── web/                # @cc-web/web:React 前端
 │       ├── src/
-│       │   ├── components/     # 侧栏、对话流、卡片、折叠区块
-│       │   └── ...
+│       │   ├── App.tsx             # 根组件（登录 + 会话选择 + URL 状态）
+│       │   ├── api.ts              # 浏览 API 客户端
+│       │   ├── chatApi.ts          # 续聊 REST 封装
+│       │   ├── useSession.ts       # SSE 流式状态管理 hook
+│       │   ├── diff.ts             # 文本 diff 计算
+│       │   └── components/
+│       │       ├── Login.tsx
+│       │       ├── Sidebar.tsx
+│       │       ├── MobileMenu.tsx
+│       │       ├── Conversation.tsx    # 消息流渲染
+│       │       ├── Composer.tsx        # 输入框 + 附件上传
+│       │       ├── QuestionCard.tsx    # 答题卡片（单选/多选）
+│       │       ├── PermissionCard.tsx  # 权限确认卡片
+│       │       ├── PlanCard.tsx        # 计划审批卡片
+│       │       ├── DiffView.tsx        # 历史 diff 展示
+│       │       ├── AttachmentPreview.tsx
+│       │       ├── ConfirmDialog.tsx
+│       │       └── AlertDialog.tsx
 │       └── package.json    # 依赖 @cc-web/shared
 ```
+
+> **实现演进**: 设计阶段简化为 `sessions.ts` 单文件，实际实现将会话管理拆分为 `SessionManager` / `Session` / `InputQueue` / `PendingRegistry` / `chatRoutes` 等模块以提升可维护性。
 
 根 `package.json` 提供公共脚本(`npm run dev`、`npm run build`、`npm test`),通过 workspaces 分发到各包。
 
