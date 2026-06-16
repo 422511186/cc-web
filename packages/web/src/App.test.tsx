@@ -97,27 +97,27 @@ describe('App responsive layout', () => {
     expect(sidebar).toBeInTheDocument();
   });
 
-  test('移动端显示汉堡菜单按钮', () => {
+  test('移动端状态栏只显示一个汉堡菜单按钮', () => {
     Storage.prototype.getItem = vi.fn(() => 'test-token');
     const { container } = render(<App />);
 
     // 选中会话后状态栏出现
     fireEvent.click(screen.getByTestId('select-A'));
 
-    // 应该有汉堡菜单按钮（通过 aria-label 查找，即使 display:none）
-    const menuBtn = container.querySelector('button[aria-label="菜单"]');
-    expect(menuBtn).toBeInTheDocument();
-    expect(menuBtn).toHaveTextContent('☰');
+    // 应该只有一个汉堡菜单按钮（在状态栏里）
+    const menuBtns = container.querySelectorAll('button[aria-label="菜单"]');
+    expect(menuBtns.length).toBe(1);
+    expect(menuBtns[0]).toHaveTextContent('☰');
   });
 
-  test('空状态页也显示汉堡菜单按钮', () => {
+  test('空状态页也只显示一个汉堡菜单按钮', () => {
     Storage.prototype.getItem = vi.fn(() => 'test-token');
     const { container } = render(<App />);
 
-    // 未选择会话时，应该也有汉堡菜单按钮
-    const menuBtn = container.querySelector('button[aria-label="菜单"]');
-    expect(menuBtn).toBeInTheDocument();
-    expect(menuBtn).toHaveTextContent('☰');
+    // 未选择会话时，应该也只有一个汉堡菜单按钮
+    const menuBtns = container.querySelectorAll('button[aria-label="菜单"]');
+    expect(menuBtns.length).toBe(1);
+    expect(menuBtns[0]).toHaveTextContent('☰');
   });
 
   test('点击汉堡菜单按钮调用 window.__toggleMobileMenu', () => {
