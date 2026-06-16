@@ -613,49 +613,6 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, hi
         alignItems: 'center',
         gap: '0.75rem',
       }}>
-        {/* Mobile menu button - only shown on mobile */}
-        <button
-          onClick={() => {
-            if ((window as any).__toggleMobileMenu) {
-              (window as any).__toggleMobileMenu();
-            }
-          }}
-          aria-label="打开菜单"
-          className="mobile-menu-button-header"
-          style={{
-            width: '40px',
-            height: '40px',
-            backgroundColor: 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            display: 'none', // Hidden by default, shown on mobile via CSS
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '5px',
-            padding: 0,
-            flexShrink: 0,
-          }}
-        >
-          <span style={{
-            width: '20px',
-            height: '2px',
-            backgroundColor: '#333',
-            borderRadius: '2px',
-          }} />
-          <span style={{
-            width: '20px',
-            height: '2px',
-            backgroundColor: '#333',
-            borderRadius: '2px',
-          }} />
-          <span style={{
-            width: '20px',
-            height: '2px',
-            backgroundColor: '#333',
-            borderRadius: '2px',
-          }} />
-        </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#333' }}>
             {projectName}

@@ -108,6 +108,7 @@ describe('App responsive layout', () => {
     const statusBars = container.querySelectorAll('.status-bar');
     expect(statusBars.length).toBe(1);
 
+    // 应该只有一个汉堡菜单按钮（在状态栏中）
     const menuBtns = container.querySelectorAll('.mobile-menu-button-header');
     expect(menuBtns.length).toBe(1);
     expect(menuBtns[0]).toHaveTextContent('☰');
