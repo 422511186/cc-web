@@ -81,11 +81,11 @@ export function MobileMenu({ children }: MobileMenuProps) {
               top: '1rem',
               right: '1rem',
               zIndex: 1001,
-              width: '36px',
-              height: '36px',
-              backgroundColor: '#f5f5f5',
-              border: '1px solid #e0e0e0',
-              borderRadius: '8px',
+              width: '32px',
+              height: '32px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: '6px',
               cursor: 'pointer',
               fontSize: '1.25rem',
               color: '#666',
@@ -93,12 +93,15 @@ export function MobileMenu({ children }: MobileMenuProps) {
               alignItems: 'center',
               justifyContent: 'center',
               transition: 'all 0.2s',
+              opacity: 0.7,
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#e8e8e8';
+              e.currentTarget.style.backgroundColor = '#f5f5f5';
+              e.currentTarget.style.opacity = '1';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = '#f5f5f5';
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.opacity = '0.7';
             }}
           >
             ✕
