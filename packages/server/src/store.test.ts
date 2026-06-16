@@ -16,6 +16,57 @@ describe('SessionStore', () => {
     store = new SessionStore(mockProjectsDir, () => true);
   });
 
+  describe('项目路径解码', () => {
+    it('should read real path from session cwd when available', async () => {
+      // 测试带连字符的项目名（如 cc-web-develop）从 session 文件读取真实路径
+      vi.mocked(fs.readdir).mockImplementation(async (p: any) => {
+        if (p.includes('C--Users-huang-workspace-cc-web-develop')) {
+          return ['session1.jsonl'] as any;
+        }
+        return ['C--Users-huang-workspace-cc-web-develop'] as any;
+      });
+
+      vi.mocked(fs.stat).mockResolvedValue({
+        isDirectory: () => true,
+      } as any);
+
+      vi.mocked(fs.readFile).mockResolvedValue(
+        '{"cwd":"C:/Users/huang/workspace/cc-web-develop","type":"session-start"}\n'
+      );
+
+      const projects = await store.listProjects();
+
+      expect(projects).toHaveLength(1);
+      expect(projects[0]).toMatchObject({
+        id: 'C--Users-huang-workspace-cc-web-develop',
+        name: 'cc-web-develop',
+        path: 'C:/Users/huang/workspace/cc-web-develop',
+      });
+    });
+
+    it('should fallback to decoding when no session files exist', async () => {
+      vi.mocked(fs.readdir).mockImplementation(async (p: any) => {
+        if (p.includes('C--Users-huang-Desktop')) {
+          return [] as any; // 没有 session 文件
+        }
+        return ['C--Users-huang-Desktop'] as any;
+      });
+
+      vi.mocked(fs.stat).mockResolvedValue({
+        isDirectory: () => true,
+      } as any);
+
+      const projects = await store.listProjects();
+
+      expect(projects).toHaveLength(1);
+      expect(projects[0]).toMatchObject({
+        id: 'C--Users-huang-Desktop',
+        name: 'Desktop',
+        path: 'C:/Users/huang/Desktop',
+      });
+    });
+  });
+
   describe('listProjects', () => {
     it('should return list of projects from directory names', async () => {
       vi.mocked(fs.readdir).mockResolvedValue([

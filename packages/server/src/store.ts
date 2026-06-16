@@ -29,13 +29,20 @@ export class SessionStore {
           const stat = await fs.stat(fullPath);
 
           if (stat.isDirectory()) {
-            // 过滤掉真实项目目录已被删除的条目(只保留磁盘上仍存在的项目)
-            if (!this.dirExists(this.decodeProjectPath(entry))) continue;
+            // 从该项目下的任一 session 文件读取真实的 cwd 作为项目路径
+            const realPath = await this.getProjectRealPath(entry);
+
+            // 如果读取失败（没有 session 或读不到 cwd），尝试解码；
+            // 但如果解码后的路径不存在，跳过该项目
+            const projectPath = realPath || this.decodeProjectPath(entry);
+            if (!this.dirExists(projectPath)) continue;
 
             projects.push({
               id: entry,
-              name: this.decodeProjectName(entry),
-              path: this.decodeProjectPath(entry),
+              // 优先用真实路径的末段作为项目名(可保留名字里的连字符,如 cc-web-develop);
+              // 没有真实路径时退回到对目录名的解码(此时名字里的连字符无法区分,会丢失)
+              name: realPath ? this.basename(realPath) : this.decodeProjectName(entry),
+              path: projectPath,
             });
           }
         } catch {
@@ -47,6 +54,42 @@ export class SessionStore {
       return projects;
     } catch {
       return [];
+    }
+  }
+
+  /** 从项目目录下的第一个 session 文件读取真实的 cwd。
+   *  返回 null 表示无法获取（没有 session 或文件损坏）。 */
+  private async getProjectRealPath(projectId: string): Promise<string | null> {
+    try {
+      const projectPath = path.join(this.projectsDir, projectId);
+      const entries = await fs.readdir(projectPath);
+
+      for (const entry of entries) {
+        if (!entry.endsWith('.jsonl')) continue;
+
+        const filePath = path.join(projectPath, entry);
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (typeof obj.cwd === 'string' && obj.cwd) {
+                return obj.cwd;
+              }
+            } catch {
+              // 跳过损坏行
+            }
+          }
+        } catch {
+          // 跳过无法读取的文件
+          continue;
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
     }
   }
 
@@ -159,13 +202,30 @@ export class SessionStore {
 
   private decodeProjectName(encoded: string): string {
     // Extract last segment from path
-    // C--Users-huang-Desktop -> Desktop
-    const segments = encoded.split('-').filter(s => s);
-    return segments[segments.length - 1] || encoded;
+    // C--Users-huang-workspace-cc-web-develop -> cc-web-develop
+    const decoded = this.decodeProjectPath(encoded);
+    return this.basename(decoded);
+  }
+
+  /** 取路径的末段(同时兼容 / 和 \ 分隔符)。 */
+  private basename(p: string): string {
+    const segments = p.split(/[/\\]/);
+    return segments[segments.length - 1] || p;
   }
 
   private decodeProjectPath(encoded: string): string {
-    // C--Users-huang-Desktop -> C:/Users/huang/Desktop
-    return encoded.replace(/--/g, ':/').replace(/-/g, '/');
+    // C--Users-huang-workspace-cc-web-develop -> C:/Users/huang/workspace/cc-web-develop
+    // 先找到盘符部分（第一个 -- 前的内容 + --）
+    const driveMatch = encoded.match(/^([A-Z])--/);
+    if (!driveMatch) {
+      // 没有盘符，直接替换所有 - 为 /
+      return encoded.replace(/-/g, '/');
+    }
+
+    const driveLetter = driveMatch[1];
+    const afterDrive = encoded.slice(driveMatch[0].length); // 去掉 "C--" 后的部分
+    const pathPart = afterDrive.replace(/-/g, '/'); // 路径部分的 - 都替换为 /
+
+    return `${driveLetter}:/${pathPart}`;
   }
 }
