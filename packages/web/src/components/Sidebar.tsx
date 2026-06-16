@@ -33,7 +33,13 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
       setLoading(true);
       const response = await apiClient.listProjects();
       setProjects(response.projects);
-      // Don't auto-expand any projects
+
+      // 自动展开第一个项目（如果有）
+      if (response.projects.length > 0) {
+        const firstProject = response.projects[0];
+        setExpandedProjects(new Set([firstProject.id]));
+        loadSessions(firstProject.id);
+      }
     } catch (error) {
       console.error('Failed to load projects:', error);
     } finally {

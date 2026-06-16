@@ -327,6 +327,27 @@ function App() {
               backgroundColor: '#fafafa',
               fontSize: '0.85rem',
             }}>
+              {/* 移动端菜单按钮 */}
+              <button
+                className="mobile-menu-button-header"
+                onClick={() => {
+                  if ((window as any).__toggleMobileMenu) {
+                    (window as any).__toggleMobileMenu();
+                  }
+                }}
+                aria-label="菜单"
+                style={{
+                  display: 'none', // 默认隐藏，移动端 CSS 会显示
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  fontSize: '1.5rem',
+                  padding: '0.25rem',
+                  color: '#666',
+                }}
+              >
+                ☰
+              </button>
               <span style={{
                 display: 'inline-flex',
                 alignItems: 'center',

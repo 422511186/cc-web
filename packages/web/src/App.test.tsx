@@ -96,6 +96,39 @@ describe('App responsive layout', () => {
     const sidebar = container.querySelector('[data-testid="sidebar"]');
     expect(sidebar).toBeInTheDocument();
   });
+
+  test('移动端显示汉堡菜单按钮', () => {
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+    const { container } = render(<App />);
+
+    // 选中会话后状态栏出现
+    fireEvent.click(screen.getByTestId('select-A'));
+
+    // 应该有汉堡菜单按钮（通过 aria-label 查找，即使 display:none）
+    const menuBtn = container.querySelector('button[aria-label="菜单"]');
+    expect(menuBtn).toBeInTheDocument();
+    expect(menuBtn).toHaveTextContent('☰');
+  });
+
+  test('点击汉堡菜单按钮调用 window.__toggleMobileMenu', () => {
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+    const mockToggle = vi.fn();
+
+    const { container } = render(<App />);
+
+    // 在渲染后设置 mock
+    (window as any).__toggleMobileMenu = mockToggle;
+
+    // 选中会话
+    fireEvent.click(screen.getByTestId('select-A'));
+
+    const menuBtn = container.querySelector('button[aria-label="菜单"]');
+    expect(menuBtn).toBeInTheDocument();
+
+    fireEvent.click(menuBtn!);
+
+    expect(mockToggle).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('App 退出登录', () => {
