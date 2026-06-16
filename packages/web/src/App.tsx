@@ -407,6 +407,7 @@ function App() {
                   projectId={selectedSession.projectId}
                   sessionId={selectedSession.sessionId}
                   projectName={projects.find(p => p.id === selectedSession.projectId)?.name}
+                  projectPath={projects.find(p => p.id === selectedSession.projectId)?.path}
                   liveMessages={runId ? liveMessages : undefined}
                   historyBoundary={runId ? boundaries.get(selectedSession.sessionId) : undefined}
                   onHistoryLoaded={handleHistoryLoaded}

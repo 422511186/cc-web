@@ -15,6 +15,8 @@ interface ConversationProps {
   sessionId: string;
   /** 项目名(可选,用于顶栏展示;不传则从 projectId 推导,但对含连字符的名字会有损) */
   projectName?: string;
+  /** 项目磁盘路径(可选,展示在顶栏项目名下方) */
+  projectPath?: string;
   /** 实时续聊:已累积的流式消息 */
   liveMessages?: LiveMessage[];
   /** 历史渲染边界:只渲染 messages.slice(0, historyBoundary),越界部分(本轮已落盘)由实时流负责,避免与全量重放重复 */
@@ -354,7 +356,7 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
-export function Conversation({ apiClient, projectId, sessionId, projectName, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
+export function Conversation({ apiClient, projectId, sessionId, projectName, projectPath, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -619,6 +621,22 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, liv
           <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#333' }}>
             {displayName}
           </h2>
+          {projectPath && (
+            <div
+              style={{
+                fontSize: '0.75rem',
+                color: '#999',
+                marginTop: '0.25rem',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={projectPath}
+            >
+              {projectPath}
+            </div>
+          )}
           <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.375rem' }}>
             {new Date(session.updatedAt).toLocaleString('zh-CN', {
               month: '2-digit',

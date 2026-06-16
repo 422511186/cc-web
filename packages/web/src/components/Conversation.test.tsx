@@ -57,6 +57,26 @@ describe('Conversation 项目名展示', () => {
     await waitFor(() => screen.getByText('cc-web-develop'));
     expect(screen.queryByText('develop')).toBeNull();
   });
+
+  test('传入 projectPath 时应在顶栏展示磁盘路径', async () => {
+    const getSession = vi
+      .fn()
+      .mockResolvedValue(makeSession([{ role: 'user', content: '测试', timestamp: Date.now() }]));
+
+    const apiClient = makeApiClient(getSession);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="C--Users-huang-workspace-cc-web-develop"
+        sessionId="s1"
+        projectName="cc-web-develop"
+        projectPath="C:/Users/huang/workspace/cc-web-develop"
+      />
+    );
+
+    await waitFor(() => screen.getByText('C:/Users/huang/workspace/cc-web-develop'));
+  });
 });
 
 describe('Conversation 续聊活跃时不被文件刷新重复合并', () => {
