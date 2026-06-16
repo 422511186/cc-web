@@ -146,6 +146,12 @@
     min-height: 44px;
     min-width: 44px;
   }
+
+  /* 删除按钮保持小尺寸，不需要触摸友好 */
+  .session-delete-btn {
+    min-height: unset !important;
+    min-width: unset !important;
+  }
 }
 
 @media (min-width: 769px) and (max-width: 1024px) {
