@@ -429,14 +429,49 @@ function App() {
             )}
           </>
         ) : (
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100%',
-            backgroundColor: '#f5f5f5',
-          }}>
+          <>
+            {/* 空状态页也有状态栏（包含汉堡菜单） */}
+            <div className="status-bar" style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              padding: '0.5rem 1rem',
+              borderBottom: '1px solid #eee',
+              backgroundColor: '#fafafa',
+              fontSize: '0.85rem',
+            }}>
+              {/* 移动端菜单按钮 */}
+              <button
+                className="mobile-menu-button-header"
+                onClick={() => {
+                  if ((window as any).__toggleMobileMenu) {
+                    (window as any).__toggleMobileMenu();
+                  }
+                }}
+                aria-label="菜单"
+                style={{
+                  display: 'none',
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  fontSize: '1.5rem',
+                  padding: '0.25rem',
+                  color: '#666',
+                }}
+              >
+                ☰
+              </button>
+              <span style={{ color: '#999', fontSize: '0.875rem' }}>未选择会话</span>
+            </div>
+
+            <div style={{
+              display: 'flex',
+              flex: 1,
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#f5f5f5',
+            }}>
             <div style={{
               fontSize: '3rem',
               marginBottom: '1rem',
@@ -468,6 +503,7 @@ function App() {
               ＋ 新建对话
             </button>
           </div>
+          </>
         )}
       </div>
       <AlertDialog

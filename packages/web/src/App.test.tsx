@@ -110,6 +110,16 @@ describe('App responsive layout', () => {
     expect(menuBtn).toHaveTextContent('☰');
   });
 
+  test('空状态页也显示汉堡菜单按钮', () => {
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+    const { container } = render(<App />);
+
+    // 未选择会话时，应该也有汉堡菜单按钮
+    const menuBtn = container.querySelector('button[aria-label="菜单"]');
+    expect(menuBtn).toBeInTheDocument();
+    expect(menuBtn).toHaveTextContent('☰');
+  });
+
   test('点击汉堡菜单按钮调用 window.__toggleMobileMenu', () => {
     Storage.prototype.getItem = vi.fn(() => 'test-token');
     const mockToggle = vi.fn();
