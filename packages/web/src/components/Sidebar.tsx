@@ -177,7 +177,7 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
                     key={session.id}
                     onClick={() => onSessionSelect(project.id, session.id)}
                     style={{
-                      padding: '0.75rem 1.25rem 0.75rem 2.75rem',
+                      padding: '0.75rem 2.5rem 0.75rem 2.75rem', // 右侧增加 padding 给删除按钮留空间
                       cursor: 'pointer',
                       position: 'relative',
                       backgroundColor: selectedSessionId === session.id ? '#e3f2fd' : 'transparent',
@@ -223,32 +223,34 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
                       className="session-delete-btn"
                       style={{
                         position: 'absolute',
-                        top: '0.5rem',
+                        top: '50%',
                         right: '0.75rem',
-                        width: '24px',
-                        height: '24px',
-                        background: '#fff',
-                        border: '1px solid #e0e0e0',
-                        borderRadius: '6px',
-                        color: '#666',
+                        transform: 'translateY(-50%)',
+                        width: '20px',
+                        height: '20px',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: '4px',
+                        color: '#999',
                         cursor: 'pointer',
-                        fontSize: '0.875rem',
+                        fontSize: '1rem',
                         padding: 0,
                         lineHeight: 1,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         transition: 'all 0.2s',
+                        opacity: 0.6,
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = '#ffebee';
-                        e.currentTarget.style.borderColor = '#ef5350';
-                        e.currentTarget.style.color = '#c62828';
+                        e.currentTarget.style.color = '#ef5350';
+                        e.currentTarget.style.opacity = '1';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#fff';
-                        e.currentTarget.style.borderColor = '#e0e0e0';
-                        e.currentTarget.style.color = '#666';
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                        e.currentTarget.style.color = '#999';
+                        e.currentTarget.style.opacity = '0.6';
                       }}
                     >
                       ✕
