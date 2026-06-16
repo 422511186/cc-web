@@ -124,7 +124,7 @@ function App() {
     return () => window.removeEventListener('beforeunload', onUnload);
   }, []);
 
-  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed, closedReason } = useSession(runId);
+  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
 
   // Restore session from URL on mount
   useEffect(() => {

@@ -50,8 +50,14 @@ export class SessionManager {
     });
     const timer = this.armTimer(runId);
     this.entries.set(runId, { session, timer });
-    // 后台跑,结束后自动清理
-    void session.runToCompletion().finally(() => this.close(runId, "exited"));
+    // 后台跑,结束后自动清理。注意:续聊复用 sessionId 作 runId,旧会话流
+    // 自然结束时,池中可能已是「重新续聊」重建的新会话——仅当 entry 仍是
+    // 本会话本身时才回收,避免误杀同 runId 的新会话。
+    void session.runToCompletion().finally(() => {
+      if (this.entries.get(runId)?.session === session) {
+        this.close(runId, "exited");
+      }
+    });
     return runId;
   }
 

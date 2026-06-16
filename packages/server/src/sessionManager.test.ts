@@ -133,4 +133,43 @@ describe("SessionManager", () => {
     expect(mgr.get(runId)).toBeUndefined();
     vi.useRealTimers();
   });
+
+  it("复用 runId 续聊:旧会话流结束的兜底 close 不得误杀已重建的新会话", async () => {
+    // 可控结束的 fake SDK:第一条流等外部信号才结束,后续流永不结束。
+    let endFirst!: () => void;
+    const firstEnded = new Promise<void>((r) => (endFirst = r));
+    let call = 0;
+    const controllableClient: SdkClient = {
+      start: async function* () {
+        const mine = call++;
+        if (mine === 0) {
+          await firstEnded; // 第一条流:等信号
+        } else {
+          await new Promise(() => {}); // 后续流:永不结束
+        }
+        yield {} as SDKMessage;
+      },
+    };
+    const mgr = makeManager({ client: controllableClient });
+
+    // 1) 续聊 sA(第一次)
+    const runId = mgr.startContinue("sA", () => () => {});
+    const first = mgr.get(runId)!;
+
+    // 2) 切走:优雅分离(从池移除)
+    mgr.detach(runId);
+    expect(mgr.get(runId)).toBeUndefined();
+
+    // 3) 再次续聊 sA:同一 runId 重建一个新会话
+    mgr.startContinue("sA", () => () => {});
+    const second = mgr.get(runId)!;
+    expect(second).not.toBe(first); // 确实是新实例
+
+    // 4) 旧会话的 SDK 流此刻才自然结束 → 触发其 runToCompletion().finally
+    endFirst();
+    await new Promise((r) => setTimeout(r, 0)); // 放行微任务,让 finally 执行
+
+    // 5) 新会话不得被旧流的兜底 close 误杀
+    expect(mgr.get(runId)).toBe(second);
+  });
 });

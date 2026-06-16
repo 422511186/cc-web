@@ -186,6 +186,46 @@ describe("chat routes", () => {
     expect(secondBody).toContain(`"type":"turn_end"`);
   });
 
+  it("复用 sessionId 重新续聊:新连接不得重放上一轮残留的 closed 事件", async () => {
+    const a = app();
+
+    // 1) 续聊 sX:建立第一轮会话(echoClient 空闲,不发消息即 idle)
+    await request(a).post("/api/sessions/sX/continue").send({});
+
+    // 2) 切走:DELETE 触发 release → 空闲会话 detach → 向 hub 日志写入 closed 事件
+    await request(a).delete("/api/sessions/sX");
+
+    // 3) 再次续聊 sX:同一 runId 重建会话,hub 不应继续携带上一轮的 closed
+    await request(a).post("/api/sessions/sX/continue").send({});
+
+    // 4) 订阅 stream:读取一小段重放内容
+    const res = await request(a)
+      .get("/api/sessions/sX/stream")
+      .buffer(true)
+      .parse((r, cb) => {
+        let data = "";
+        const stop = setTimeout(
+          () => (r as unknown as { destroy: () => void }).destroy(),
+          200
+        );
+        r.on("data", (c: Buffer) => {
+          data += c.toString();
+        });
+        r.on("close", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+        r.on("end", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+      });
+
+    const body = (res.text ?? (res.body as string)) as string;
+    // 新一轮的重放里不应出现上一轮残留的 closed 事件
+    expect(body).not.toContain(`"type":"closed"`);
+  });
+
   describe("POST /sessions/new with cwd", () => {
     it("请求体带合法 cwd(存在的目录)→ 200 返回 runId,且 sessionManager.startNew 被调用时传入该 cwd", async () => {
       const mgr = new SessionManager({

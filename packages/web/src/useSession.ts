@@ -139,6 +139,11 @@ export function useSession(runId: string | null): SessionState {
 
   useEffect(() => {
     if (!runId) return;
+    // runId 变化:先复位上一会话的终态,避免切到新会话时短暂残留「已结束」。
+    // 真正的连接状态由随后的 onopen/onmessage 接管。
+    setClosed(false);
+    setClosedReason(null);
+    setConnected(false);
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
 

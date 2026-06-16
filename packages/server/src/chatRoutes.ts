@@ -47,6 +47,16 @@ export function createChatRouter(
     return hub;
   }
 
+  /** 丢弃某 runId 的残留 hub(连同宽限计时器)。续聊复用 sessionId 作 runId 时,
+   *  上一轮分离遗留的 hub 里含 closed 事件与旧日志,必须清掉,
+   *  否则新连接整段重放会重放出旧的 closed,让前端误判会话已结束。 */
+  function resetHub(runId: string): void {
+    const hub = hubs.get(runId);
+    if (!hub) return;
+    if (hub.graceTimer) clearTimeout(hub.graceTimer);
+    hubs.delete(runId);
+  }
+
   /** 会话事件回调:始终追加到全量日志(供重连重放),有 SSE 连着则同时实时推送 */
   function makeOnEvent(runId: string) {
     return (event: ServerEvent) => {
@@ -104,6 +114,9 @@ export function createChatRouter(
       res.status(409).json({ error: "原项目目录已不存在,无法续聊" });
       return;
     }
+    // 复用 sessionId 作 runId:清掉上一轮分离遗留的 hub(含旧 closed 事件),
+    // 避免新连接整段重放时重放出旧 closed 导致前端误判已结束/卡连接中。
+    resetHub(sessionId);
     const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd);
     const body: StartSessionResponse = { runId };
     res.json(body);

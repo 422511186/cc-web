@@ -67,4 +67,27 @@ describe('useSession - closed event', () => {
     expect(result.current.closed).toBe(false);
     expect(result.current.closedReason).toBe(null);
   });
+
+  test('runId 切换到新会话时立即复位 closed(不残留上一个会话的已结束态)', () => {
+    const { result, rerender } = renderHook(
+      ({ id }) => useSession(id),
+      { initialProps: { id: 'run-A' } }
+    );
+
+    // A 会话收到 closed
+    act(() => {
+      const es = vi.mocked(global.EventSource).mock.results[0].value;
+      es.onmessage?.({ data: JSON.stringify({ type: 'closed', reason: 'detached' }) } as MessageEvent);
+    });
+    expect(result.current.closed).toBe(true);
+
+    // 切到新会话 B:在新连接 onopen 之前,closed 不应残留为 true
+    act(() => {
+      rerender({ id: 'run-B' });
+    });
+
+    expect(result.current.closed).toBe(false);
+    expect(result.current.closedReason).toBe(null);
+    expect(result.current.connected).toBe(false);
+  });
 });
