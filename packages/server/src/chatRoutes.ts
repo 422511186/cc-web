@@ -4,45 +4,63 @@ import type {
   PromptAnswer,
   SendMessageRequest,
   StartSessionResponse,
+  NewSessionRequest,
 } from "@cc-web/shared";
 import type { SessionManager } from "./sessionManager.js";
 import { SseChannel } from "./sseChannel.js";
+import path from "node:path";
 
-/** 每个 runId 的事件缓冲 + 可选当前 SSE 通道 */
+/** 每个 runId 的 append-only 事件日志 + 可选当前 SSE 通道 */
 interface Hub {
-  buffer: ServerEvent[];
+  /** 全量事件日志(永不清空,直到会话结束且无人连接才丢弃)。
+   *  支持重连时整段重放,让切走再切回的前端能从零重建完整状态。 */
+  log: ServerEvent[];
   channel: SseChannel | null;
   /** 会话是否已结束(收到 closed 事件) */
   closed: boolean;
+  /** 会话结束且无连接时的宽限清理计时器,留出重连窗口 */
+  graceTimer: NodeJS.Timeout | null;
 }
 
-export function createChatRouter(mgr: SessionManager): Router {
+/** 会话结束后保留日志的宽限窗口(ms),供切走再切回的前端重连重放 */
+const HUB_GRACE_MS = 60_000;
+
+/** 把 (projectId, sessionId) 解析成 session 的真实工作目录,供 SDK resume 用 */
+export type CwdResolver = (
+  projectId: string | undefined,
+  sessionId: string
+) => Promise<string | null>;
+
+export function createChatRouter(
+  mgr: SessionManager,
+  resolveCwd?: CwdResolver,
+  dirExists?: (cwd: string) => boolean
+): Router {
   const hubs = new Map<string, Hub>();
 
   function hubFor(runId: string): Hub {
     let hub = hubs.get(runId);
     if (!hub) {
-      hub = { buffer: [], channel: null, closed: false };
+      hub = { log: [], channel: null, closed: false, graceTimer: null };
       hubs.set(runId, hub);
     }
     return hub;
   }
 
-  /** 会话事件回调:有 SSE 连着就直接推,否则缓冲等连接回放 */
+  /** 会话事件回调:始终追加到全量日志(供重连重放),有 SSE 连着则同时实时推送 */
   function makeOnEvent(runId: string) {
     return (event: ServerEvent) => {
       const hub = hubFor(runId);
+      hub.log.push(event);
       if (hub.channel) {
         hub.channel.send(event);
-      } else {
-        hub.buffer.push(event);
       }
-      // 会话结束:标记 closed,但保留 hub,让尚未连上的订阅者还能回放缓冲。
-      // hub 在订阅者断开(且会话已结束)或缓冲被无人认领回收时清理。
+      // 会话结束:标记 closed,保留 hub 与日志一段宽限期,
+      // 让切走再切回的前端还能重连整段重放;无连接时启动宽限清理计时器。
       if (event.type === "closed") {
         hub.closed = true;
-        if (!hub.channel && hub.buffer.length === 0) {
-          hubs.delete(runId);
+        if (!hub.channel && !hub.graceTimer) {
+          hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);
         }
       }
     };
@@ -51,16 +69,42 @@ export function createChatRouter(mgr: SessionManager): Router {
   const router = Router();
 
   // 新建对话
-  router.post("/sessions/new", (_req, res) => {
-    const runId = mgr.startNew((id) => makeOnEvent(id));
+  router.post("/sessions/new", (req, res) => {
+    const { cwd } = req.body as NewSessionRequest;
+
+    // 如果提供了 cwd，需要校验
+    if (cwd) {
+      // 防穿越：检查相对路径和危险路径模式
+      if (cwd.includes("..") || !path.isAbsolute(cwd)) {
+        res.status(400).json({ error: "非法路径" });
+        return;
+      }
+
+      // 检查目录是否存在
+      if (dirExists && !dirExists(cwd)) {
+        res.status(400).json({ error: "目录不存在" });
+        return;
+      }
+    }
+
+    const runId = mgr.startNew((id) => makeOnEvent(id), cwd);
     const body: StartSessionResponse = { runId };
     res.json(body);
   });
 
   // 续聊
-  router.post("/sessions/:id/continue", (req, res) => {
+  router.post("/sessions/:id/continue", async (req, res) => {
     const sessionId = req.params.id;
-    const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id));
+    const projectId = (req.body as { projectId?: string })?.projectId;
+    const cwd = resolveCwd
+      ? (await resolveCwd(projectId, sessionId)) ?? undefined
+      : undefined;
+    // 原项目目录已不存在则无法 resume,给出友好错误而非启动后抛 SDK 错误
+    if (cwd && dirExists && !dirExists(cwd)) {
+      res.status(409).json({ error: "原项目目录已不存在,无法续聊" });
+      return;
+    }
+    const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd);
     const body: StartSessionResponse = { runId };
     res.json(body);
   });
@@ -93,6 +137,25 @@ export function createChatRouter(mgr: SessionManager): Router {
     res.json({ ok });
   });
 
+  // 强制终止会话执行(用户点击停止按钮)
+  router.post("/sessions/:runId/abort", (req, res) => {
+    const runId = req.params.runId;
+    const session = mgr.get(runId);
+    if (!session) {
+      res.status(404).json({ error: "session not found" });
+      return;
+    }
+    mgr.abort(runId);
+    res.json({ ok: true });
+  });
+
+  // 释放会话(切换会话/关闭页面时调用)。忙碌则保活(留池中待重连),空闲则回收。
+  // 不中断后台执行,让当前轮次跑完。幂等:未知 runId 也返回 ok。
+  router.delete("/sessions/:runId", (req, res) => {
+    mgr.release(req.params.runId);
+    res.json({ ok: true });
+  });
+
   // SSE 订阅
   router.get("/sessions/:runId/stream", (req, res) => {
     const runId = req.params.runId;
@@ -102,19 +165,23 @@ export function createChatRouter(mgr: SessionManager): Router {
       return;
     }
     const hub = hubFor(runId);
+    // 取消宽限清理:有人连上了,日志要留着供这次重放
+    if (hub.graceTimer) {
+      clearTimeout(hub.graceTimer);
+      hub.graceTimer = null;
+    }
     const channel = new SseChannel(res);
     hub.channel = channel;
-    // 回放缓冲
-    for (const event of hub.buffer) channel.send(event);
-    hub.buffer = [];
+    // 整段重放全量日志(支持切走再切回的重连),日志不清空
+    for (const event of hub.log) channel.send(event);
 
     const heartbeat = setInterval(() => channel.heartbeat(), 15_000);
     channel.onClose(() => {
       clearInterval(heartbeat);
       if (hub.channel === channel) hub.channel = null;
-      // 会话已结束且无人再连接,回收 hub
-      if (hub.closed && !hub.channel) {
-        hubs.delete(runId);
+      // 会话已结束且无人再连接:启动宽限清理,留出重连窗口后回收 hub
+      if (hub.closed && !hub.channel && !hub.graceTimer) {
+        hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);
       }
     });
   });

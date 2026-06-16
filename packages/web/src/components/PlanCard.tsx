@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { PlanPrompt, PlanAnswer } from "@cc-web/shared";
 
 export function PlanCard({
@@ -7,6 +8,14 @@ export function PlanCard({
   prompt: PlanPrompt;
   onAnswer: (a: PlanAnswer) => void;
 }) {
+  const [answered, setAnswered] = useState(false);
+
+  const handleAnswer = (decision: "approve" | "reject") => {
+    if (answered) return;
+    setAnswered(true);
+    onAnswer({ kind: "plan", id: prompt.id, decision });
+  };
+
   return (
     <div className="card card-plan">
       <div className="card-title">Claude 提交了一份计划</div>
@@ -14,17 +23,15 @@ export function PlanCard({
       <div className="card-actions">
         <button
           className="btn btn-allow"
-          onClick={() =>
-            onAnswer({ kind: "plan", id: prompt.id, decision: "approve" })
-          }
+          disabled={answered}
+          onClick={() => handleAnswer("approve")}
         >
           批准计划
         </button>
         <button
           className="btn btn-deny"
-          onClick={() =>
-            onAnswer({ kind: "plan", id: prompt.id, decision: "reject" })
-          }
+          disabled={answered}
+          onClick={() => handleAnswer("reject")}
         >
           拒绝
         </button>

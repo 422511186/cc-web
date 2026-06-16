@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SessionStore } from './store.js';
 import type { Message } from '@cc-web/shared';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 
 vi.mock('node:fs/promises');
 
@@ -11,7 +12,8 @@ describe('SessionStore', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    store = new SessionStore(mockProjectsDir);
+    // 默认所有目录都存在,保持既有用例语义不变
+    store = new SessionStore(mockProjectsDir, () => true);
   });
 
   describe('listProjects', () => {
@@ -56,6 +58,26 @@ describe('SessionStore', () => {
       const projects = await store.listProjects();
 
       expect(projects).toHaveLength(0);
+    });
+
+    it('should filter out projects whose decoded path no longer exists on disk', async () => {
+      vi.mocked(fs.readdir).mockResolvedValue([
+        'C--Users-huang-Desktop' as any,
+        'C--Users-huang-deleted' as any,
+      ]);
+
+      vi.mocked(fs.stat).mockResolvedValue({
+        isDirectory: () => true,
+      } as any);
+
+      // 仅 Desktop 对应的真实目录仍存在
+      const dirExists = (p: string) => p === 'C:/Users/huang/Desktop';
+      const filteringStore = new SessionStore(mockProjectsDir, dirExists);
+
+      const projects = await filteringStore.listProjects();
+
+      expect(projects).toHaveLength(1);
+      expect(projects[0].id).toBe('C--Users-huang-Desktop');
     });
   });
 
@@ -151,6 +173,104 @@ describe('SessionStore', () => {
       const session = await store.getSession('project', 'nonexistent');
 
       expect(session).toBeNull();
+    });
+  });
+
+  describe('getSessionCwd', () => {
+    it('should return cwd from the first jsonl line that has it', async () => {
+      vi.mocked(fs.readFile).mockResolvedValue(
+        '{"type":"mode","mode":"normal"}\n{"type":"user","cwd":"C:\\\\Users\\\\huang\\\\workspace\\\\cc-web-develop","message":{"content":"hi"}}'
+      );
+
+      const cwd = await store.getSessionCwd('C--Users-huang-workspace-cc-web-develop', 's1');
+
+      expect(cwd).toBe('C:\\Users\\huang\\workspace\\cc-web-develop');
+    });
+
+    it('should return null when no cwd present', async () => {
+      vi.mocked(fs.readFile).mockResolvedValue('{"type":"mode","mode":"normal"}');
+
+      const cwd = await store.getSessionCwd('p', 's');
+
+      expect(cwd).toBeNull();
+    });
+
+    it('should return null when file unreadable', async () => {
+      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
+
+      const cwd = await store.getSessionCwd('p', 'nope');
+
+      expect(cwd).toBeNull();
+    });
+  });
+
+  describe('deleteSession (软删除)', () => {
+    it('should soft-delete by renaming the jsonl to a .deleted file and return true', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      const result = await store.deleteSession('C--Users-huang-Desktop', 'session1');
+
+      expect(result).toBe(true);
+      // 软删除:改名为 .deleted 后缀,而非物理 unlink(文件内容保留可恢复)
+      expect(fs.rename).toHaveBeenCalledWith(
+        path.resolve(mockProjectsDir, 'C--Users-huang-Desktop', 'session1.jsonl'),
+        path.resolve(mockProjectsDir, 'C--Users-huang-Desktop', 'session1.jsonl.deleted')
+      );
+      expect(fs.unlink).not.toHaveBeenCalled();
+    });
+
+    it('should return false when the session file does not exist', async () => {
+      const err: any = new Error('ENOENT');
+      err.code = 'ENOENT';
+      vi.mocked(fs.rename).mockRejectedValue(err);
+
+      const result = await store.deleteSession('C--Users-huang-Desktop', 'nope');
+
+      expect(result).toBe(false);
+    });
+
+    it('should reject path traversal in sessionId and never rename', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('C--Users-huang-Desktop', '../../etc/passwd')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it('should reject path traversal in projectId and never rename', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('..', 'session1')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listSessions 不展示软删除的会话', () => {
+    it('should not list sessions whose file was soft-deleted (.jsonl.deleted)', async () => {
+      vi.mocked(fs.readdir).mockResolvedValue([
+        'alive.jsonl' as any,
+        'gone.jsonl.deleted' as any,
+      ]);
+
+      vi.mocked(fs.stat).mockResolvedValue({
+        isFile: () => true,
+        mtimeMs: 1000,
+        birthtimeMs: 500,
+      } as any);
+
+      vi.mocked(fs.readFile).mockResolvedValue(
+        '{"type":"user","message":{"content":"Hello"},"timestamp":"2026-06-11T17:45:31.574Z"}'
+      );
+
+      const sessions = await store.listSessions('C--Users-huang-Desktop');
+
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].id).toBe('alive');
     });
   });
 });

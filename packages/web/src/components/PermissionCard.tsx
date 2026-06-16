@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { PermissionPrompt, PermissionAnswer } from "@cc-web/shared";
 
 export function PermissionCard({
@@ -7,6 +8,14 @@ export function PermissionCard({
   prompt: PermissionPrompt;
   onAnswer: (a: PermissionAnswer) => void;
 }) {
+  const [answered, setAnswered] = useState(false);
+
+  const handleAnswer = (decision: "allow" | "deny") => {
+    if (answered) return;
+    setAnswered(true);
+    onAnswer({ kind: "permission", id: prompt.id, decision });
+  };
+
   return (
     <div className="card card-permission">
       <div className="card-title">{prompt.title}</div>
@@ -14,17 +23,15 @@ export function PermissionCard({
       <div className="card-actions">
         <button
           className="btn btn-allow"
-          onClick={() =>
-            onAnswer({ kind: "permission", id: prompt.id, decision: "allow" })
-          }
+          disabled={answered}
+          onClick={() => handleAnswer("allow")}
         >
           ✓ 允许
         </button>
         <button
           className="btn btn-deny"
-          onClick={() =>
-            onAnswer({ kind: "permission", id: prompt.id, decision: "deny" })
-          }
+          disabled={answered}
+          onClick={() => handleAnswer("deny")}
         >
           ✗ 拒绝
         </button>

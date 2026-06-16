@@ -36,6 +36,11 @@ export class Session {
   private abort = new AbortController();
   private opts: SessionOptions;
   private closed = false;
+  private detached = false;
+  /** 当前是否有一轮在执行(已 send、未到 turn_end) */
+  private executing = false;
+  /** 已 emit 过 run_info 的模型,避免每条 assistant 消息重复广播 */
+  private reportedModel: string | null = null;
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -43,7 +48,20 @@ export class Session {
 
   /** 追加一条用户消息 */
   send(text: string): void {
+    this.executing = true;
+    // 回显进事件流:重连整段重放时仍能看到用户自己的提问
+    this.emit({ type: "user_message", text });
+    // 状态转移:开始执行
+    this.emit({ type: "status", state: "executing" });
     this.input.push(text);
+  }
+
+  /**
+   * 会话是否「忙」:一轮执行中(已 send、未到 turn_end),或有待答项等用户回答。
+   * 切走时据此决定保活(忙)还是立即回收(空闲)。
+   */
+  isBusy(): boolean {
+    return this.executing || this.pending.hasAny();
   }
 
   /** 提交用户对某待答事项的回答;返回是否命中一个未决项 */
@@ -54,11 +72,30 @@ export class Session {
   /** 关闭会话:结束输入、abort SDK、拒绝未决项、发 closed 事件 */
   close(reason: "idle" | "aborted" | "exited"): void {
     if (this.closed) return;
+    // 已优雅分离:任务自然结束后的兜底 close 应为 no-op(不再 abort/重复 emit)
+    if (this.detached) {
+      this.closed = true;
+      return;
+    }
     this.closed = true;
     this.input.close();
     this.abort.abort();
     this.pending.rejectAll(new Error("session closed"));
     this.emit({ type: "closed", reason });
+  }
+
+  /**
+   * 优雅分离:前端断开/切换/关页面时调用。
+   * 停止接收新输入、拒绝无人应答的待答项,但**不 abort** —— 正在执行的轮次会跑完,
+   * SDK 回头读下一条输入时拿到 done 自然结束。结束后由 runToCompletion 触发回收。
+   */
+  detach(): void {
+    if (this.closed || this.detached) return;
+    this.detached = true;
+    this.input.close();
+    // 无人应答的待答项要拒绝,否则当前轮次会永远挂起、无法自然结束
+    this.pending.rejectAll(new Error("session detached"));
+    this.emit({ type: "closed", reason: "detached" });
   }
 
   private emit(event: ServerEvent): void {
@@ -90,8 +127,13 @@ export class Session {
     }
 
     this.emit({ type: "prompt", prompt });
+    // 状态转移:出现待答项,等用户回答
+    this.emit({ type: "status", state: "waiting" });
 
     const answer = await promise; // ← 挂起,直到 answer() 或 close()
+
+    // 用户已回答,回到执行中(继续跑该轮)
+    this.emit({ type: "status", state: "executing" });
 
     if (answer.kind === "permission") {
       return answer.decision === "allow"
@@ -174,6 +216,13 @@ export class Session {
         break;
       }
       case "assistant": {
+        // 提取当前活跃 run 的模型(首次见到即广播一次)。
+        // 注意:SDK assistant 消息不携带 effort/推理强度,故只报 model。
+        const model = (msg as { message?: { model?: string } }).message?.model;
+        if (model && model !== this.reportedModel) {
+          this.reportedModel = model;
+          this.emit({ type: "run_info", model });
+        }
         const content =
           (msg as { message?: { content?: unknown[] } }).message?.content ?? [];
         for (const block of content as {
@@ -210,7 +259,10 @@ export class Session {
       }
       case "result": {
         const isError = (msg as { is_error?: boolean }).is_error ?? false;
+        this.executing = false;
         this.emit({ type: "turn_end", isError });
+        // 状态转移:一轮结束,回到空闲可发下一条
+        this.emit({ type: "status", state: "idle" });
         break;
       }
       default:

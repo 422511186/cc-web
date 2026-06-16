@@ -25,7 +25,7 @@ export function loadConfig(): Config {
 
   const idleTimeoutMs = process.env.SESSION_IDLE_TIMEOUT_MS
     ? Number(process.env.SESSION_IDLE_TIMEOUT_MS)
-    : 30 * 60 * 1000;
+    : 3 * 60 * 1000;
   const maxConcurrent = process.env.MAX_CONCURRENT_SESSIONS
     ? Number(process.env.MAX_CONCURRENT_SESSIONS)
     : 4;

@@ -55,6 +55,14 @@ class ApiClient {
     );
   }
 
+  /** 删除一条历史会话(对标 VSCode 插件的删除功能)。 */
+  async deleteSession(projectId: string, sessionId: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' }
+    );
+  }
+
   /** Build a URL for a cached image file, with the auth token as a query param
    * (since <img src> can't send an Authorization header). */
   imageUrl(filePath: string): string {

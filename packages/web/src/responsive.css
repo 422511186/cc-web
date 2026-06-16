@@ -490,5 +490,15 @@
   .option { min-height: 44px; }
 
   .composer-input { font-size: 16px; /* 防止 iOS 聚焦缩放 */ }
+
+  /* 状态栏在移动端换行显示，避免挤在一起 */
+  .status-bar {
+    flex-wrap: wrap !important;
+    gap: 0.5rem !important;
+  }
+
+  .status-bar > span {
+    white-space: nowrap;
+  }
 }
 

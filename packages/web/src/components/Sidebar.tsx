@@ -6,14 +6,23 @@ interface SidebarProps {
   apiClient: ApiClient;
   onSessionSelect: (projectId: string, sessionId: string) => void;
   selectedSessionId?: string;
+  onNewSession?: (cwd: string) => void;
 }
 
-export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: SidebarProps) {
+export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSession }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, Session[]>>({});
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+
+  const handleNewClick = () => {
+    const cwd = window.prompt('请输入工作目录路径（留空则使用默认）:', '');
+    if (cwd === null) return; // 用户取消
+    if (onNewSession) {
+      onNewSession(cwd || '');
+    }
+  };
 
   useEffect(() => {
     loadProjects();
@@ -57,6 +66,30 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: Sideb
     setExpandedProjects(newExpanded);
   };
 
+  const handleDeleteSession = async (
+    e: React.MouseEvent,
+    projectId: string,
+    sessionId: string,
+  ) => {
+    // 阻止冒泡,避免触发选中该会话
+    e.stopPropagation();
+
+    if (!window.confirm('确定删除这个会话吗?会话将从列表隐藏(文件保留在磁盘上,可手动恢复)。')) {
+      return;
+    }
+
+    try {
+      await apiClient.deleteSession(projectId, sessionId);
+      // 从列表移除该会话
+      setSessionsByProject(prev => ({
+        ...prev,
+        [projectId]: (prev[projectId] ?? []).filter(s => s.id !== sessionId),
+      }));
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+    }
+  };
+
   if (loading) {
     return <div style={{ padding: '1rem' }}>Loading...</div>;
   }
@@ -93,6 +126,7 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: Sideb
           onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
         />
         <button
+          onClick={handleNewClick}
           style={{
             width: '100%',
             padding: '0.625rem',
@@ -157,6 +191,7 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: Sideb
                     style={{
                       padding: '0.75rem 1.25rem 0.75rem 2.75rem',
                       cursor: 'pointer',
+                      position: 'relative',
                       backgroundColor: selectedSessionId === session.id ? '#e3f2fd' : 'transparent',
                       borderLeft: selectedSessionId === session.id ? '3px solid #1976d2' : '3px solid transparent',
                       transition: 'all 0.15s',
@@ -193,6 +228,26 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId }: Sideb
                         day: '2-digit',
                       })}
                     </div>
+                    <button
+                      aria-label="删除会话"
+                      title="删除会话"
+                      onClick={(e) => handleDeleteSession(e, project.id, session.id)}
+                      className="session-delete-btn"
+                      style={{
+                        position: 'absolute',
+                        top: '0.5rem',
+                        right: '0.75rem',
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#c62828',
+                        cursor: 'pointer',
+                        fontSize: '0.875rem',
+                        padding: '0.25rem',
+                        lineHeight: 1,
+                      }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 ))}
               </div>

@@ -1,16 +1,23 @@
 import { useRef, useState } from "react";
 import { uploadFile } from "../chatApi.js";
 import { AttachmentPreview, type Attachment } from "./AttachmentPreview.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 export function Composer({
   disabled,
+  executing,
   onSend,
+  onAbort,
 }: {
   disabled: boolean;
-  onSend: (text: string, attachments: string[]) => void;
+  executing?: boolean;
+  onSend: (text: string, attachments: string[]) => void | Promise<void>;
+  onAbort?: () => void;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [sending, setSending] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
 
@@ -29,15 +36,21 @@ export function Composer({
     }
   }
 
-  function submit() {
+  async function submit() {
+    if (sending) return;
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
-    onSend(
-      trimmed,
-      attachments.map((a) => a.ref)
-    );
-    setText("");
-    setAttachments([]);
+    setSending(true);
+    try {
+      await onSend(
+        trimmed,
+        attachments.map((a) => a.ref)
+      );
+      setText("");
+      setAttachments([]);
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -83,6 +96,7 @@ export function Composer({
           value={text}
           placeholder="输入消息…"
           rows={1}
+          disabled={disabled || sending}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -91,10 +105,33 @@ export function Composer({
             }
           }}
         />
-        <button className="composer-send" disabled={disabled} onClick={submit}>
-          发送
-        </button>
+        {executing ? (
+          <button
+            className="composer-send"
+            onClick={() => setShowConfirm(true)}
+          >
+            ⏹ 停止
+          </button>
+        ) : (
+          <button
+            className="composer-send"
+            disabled={disabled || sending}
+            onClick={submit}
+          >
+            发送
+          </button>
+        )}
       </div>
+      <ConfirmDialog
+        open={showConfirm}
+        title="确认停止"
+        message="确定要停止当前执行吗？"
+        onConfirm={() => {
+          setShowConfirm(false);
+          onAbort?.();
+        }}
+        onCancel={() => setShowConfirm(false)}
+      />
     </div>
   );
 }

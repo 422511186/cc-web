@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { SessionDetail, Message, PendingPrompt, PromptAnswer } from '@cc-web/shared';
 import type { ApiClient } from '../api';
 import type { LiveMessage } from '../useSession';
 import { QuestionCard } from './QuestionCard';
 import { PermissionCard } from './PermissionCard';
 import { PlanCard } from './PlanCard';
+import { DiffView, type DiffSegment } from './DiffView';
 import { marked } from 'marked';
 import '../markdown.css';
 
@@ -14,6 +15,10 @@ interface ConversationProps {
   sessionId: string;
   /** 实时续聊:已累积的流式消息 */
   liveMessages?: LiveMessage[];
+  /** 历史渲染边界:只渲染 messages.slice(0, historyBoundary),越界部分(本轮已落盘)由实时流负责,避免与全量重放重复 */
+  historyBoundary?: number;
+  /** 加载到历史后回报其条数(供 App 在起跑那刻锁定 historyBoundary) */
+  onHistoryLoaded?: (sessionId: string, length: number) => void;
   /** 当前待答事项(权限/答题/计划) */
   pending?: PendingPrompt | null;
   /** 用户对待答事项的回答回调 */
@@ -78,6 +83,46 @@ function summarizeInput(input: unknown): string {
     if (typeof o.path === 'string') return o.path;
   }
   try { return JSON.stringify(input).slice(0, 60); } catch { return ''; }
+}
+
+/** 是否为可渲染 diff 的编辑类工具 */
+function isEditTool(name?: string): boolean {
+  return name === 'Edit' || name === 'MultiEdit' || name === 'Write';
+}
+
+/**
+ * 把编辑工具的入参解析为 DiffView 所需的 { filePath, segments }。
+ * - Edit:{ file_path, old_string, new_string } → 单段
+ * - MultiEdit:{ file_path, edits: [{old_string,new_string}] } → 多段
+ * - Write:{ file_path, content } → 单段(old='' 视为全新增)
+ * 无法解析(结构不符)时返回 null,调用方回退到原始 JSON 展示。
+ */
+function toDiffProps(toolName: string | undefined, input: unknown): { filePath: string; segments: DiffSegment[] } | null {
+  if (!isEditTool(toolName) || !input || typeof input !== 'object') return null;
+  const o = input as Record<string, unknown>;
+  const filePath = typeof o.file_path === 'string' ? o.file_path : '';
+
+  if (toolName === 'Write') {
+    if (typeof o.content !== 'string') return null;
+    return { filePath, segments: [{ oldText: '', newText: o.content }] };
+  }
+  if (toolName === 'MultiEdit') {
+    if (!Array.isArray(o.edits)) return null;
+    const segments: DiffSegment[] = [];
+    for (const e of o.edits) {
+      if (e && typeof e === 'object') {
+        const ed = e as Record<string, unknown>;
+        segments.push({
+          oldText: typeof ed.old_string === 'string' ? ed.old_string : '',
+          newText: typeof ed.new_string === 'string' ? ed.new_string : '',
+        });
+      }
+    }
+    return segments.length > 0 ? { filePath, segments } : null;
+  }
+  // Edit
+  if (typeof o.old_string !== 'string' || typeof o.new_string !== 'string') return null;
+  return { filePath, segments: [{ oldText: o.old_string, newText: o.new_string }] };
 }
 
 // A small image attachment thumbnail (chat-bubble style). Clicking opens the lightbox.
@@ -284,12 +329,20 @@ function CollapsibleMessage({ message }: { message: Message }) {
           backgroundColor: '#fff',
         }}>
           {message.type === 'tool_use' && message.metadata?.toolInput ? (
-            <>
-              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#333' }}>Input:</div>
-              <pre style={{ margin: 0, fontSize: '0.8rem', overflow: 'auto', color: '#666' }}>
-                {JSON.stringify(message.metadata.toolInput, null, 2)}
-              </pre>
-            </>
+            (() => {
+              const diffProps = toDiffProps(message.metadata.toolName, message.metadata.toolInput);
+              if (diffProps) {
+                return <DiffView filePath={diffProps.filePath} segments={diffProps.segments} />;
+              }
+              return (
+                <>
+                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#333' }}>Input:</div>
+                  <pre style={{ margin: 0, fontSize: '0.8rem', overflow: 'auto', color: '#666' }}>
+                    {JSON.stringify(message.metadata.toolInput, null, 2)}
+                  </pre>
+                </>
+              );
+            })()
           ) : (
             message.content
           )}
@@ -299,13 +352,26 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
-export function Conversation({ apiClient, projectId, sessionId, liveMessages, pending, onAnswer }: ConversationProps) {
+export function Conversation({ apiClient, projectId, sessionId, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentUserMessageIndex, setCurrentUserMessageIndex] = useState<number>(0);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const messageRefs = useState<(HTMLDivElement | null)[]>([])[0];
+
+  // 续聊是否活跃:活跃时 assistant 输出由实时流(liveMessages)负责渲染,
+  // 文件变更不再重新合并 session.messages,避免同一条回复渲染两遍。
+  const liveActive = liveMessages !== undefined;
+  const liveActiveRef = useRef(liveActive);
+  liveActiveRef.current = liveActive;
+
+  // 历史渲染边界:续聊活跃且给定 historyBoundary 时,只渲染起跑那刻之前的历史;
+  // 越界部分(本轮已落盘到 JSONL 的内容)由实时流全量重放负责,避免切回时重复。
+  const historyMessages =
+    liveActive && historyBoundary !== undefined && session
+      ? session.messages.slice(0, historyBoundary)
+      : session?.messages ?? [];
 
   // Extract project name from projectId (e.g., "C--Users-huang-workspace-cc-web" -> "cc-web")
   const projectName = projectId.split('-').filter(Boolean).pop() || projectId;
@@ -316,12 +382,13 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
       setError(null);
       const response = await apiClient.getSession(projectId, sessionId);
       setSession(response.session);
+      onHistoryLoaded?.(sessionId, response.session.messages.length);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load session');
     } finally {
       setLoading(false);
     }
-  }, [apiClient, projectId, sessionId]);
+  }, [apiClient, projectId, sessionId, onHistoryLoaded]);
 
   useEffect(() => {
     loadSession();
@@ -332,6 +399,8 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
     const cleanup = apiClient.connectSSE(async (update) => {
       // Only update if it's for the current session
       if (update.projectId === projectId && update.sessionId === sessionId) {
+        // 续聊活跃:实时流为准,跳过文件变更触发的历史重新合并(否则与实时流重复)
+        if (liveActiveRef.current) return;
         console.log('Session updated, fetching new messages...');
         try {
           const response = await apiClient.getSession(projectId, sessionId);
@@ -389,6 +458,19 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
       }
     }
   }, [session]);
+
+  // 实时流式消息更新时自动滚动到底部
+  useEffect(() => {
+    if (liveMessages && liveMessages.length > 0) {
+      // 滚动到容器最底部(实时消息渲染在历史消息之后)
+      const container = document.querySelector('.conversation-messages');
+      if (container) {
+        setTimeout(() => {
+          container.scrollTop = container.scrollHeight;
+        }, 50);
+      }
+    }
+  }, [liveMessages]);
 
   const getUserMessageIndices = () => {
     if (!session) return [];
@@ -751,7 +833,7 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
         </button>
       </div>
 
-      <div style={{
+      <div className="conversation-messages" style={{
         flex: 1,
         overflow: 'auto',
         padding: '1.5rem 0',
@@ -759,7 +841,7 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
         paddingRight: '6rem',
         backgroundColor: 'transparent',
       }}>
-        {session.messages.map((message, index) => {
+        {historyMessages.map((message, index) => {
           const isUser = message.role === 'user' && (!message.type || message.type === 'text');
 
           return (
@@ -821,6 +903,33 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
             {liveMessages.map((m, i) => {
               const hasContent = m.blocks.length > 0 || m.streaming;
               if (!hasContent) return null;
+              // 实时流里的用户消息(乐观插入):右对齐气泡,与历史用户消息一致
+              if (m.role === 'user') {
+                const text = m.blocks
+                  .map((b) => (b.kind === 'text' ? b.text : ''))
+                  .join('');
+                return (
+                  <div
+                    key={`live-${i}`}
+                    style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 auto 1rem' }}
+                  >
+                    <div
+                      className="message-card user-message"
+                      style={{
+                        maxWidth: '65%',
+                        padding: '0.875rem 1.125rem',
+                        borderRadius: '12px',
+                        backgroundColor: 'rgb(242, 242, 242)',
+                        color: '#2c2c2c',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {text}
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div
                   key={`live-${i}`}
@@ -843,6 +952,17 @@ export function Conversation({ apiClient, projectId, sessionId, liveMessages, pe
                       return <LiveCollapsible key={bi} summary="💭 思考" body={b.text} />;
                     }
                     if (b.kind === 'tool_use') {
+                      const diffProps = toDiffProps(b.name, b.input);
+                      if (diffProps) {
+                        return (
+                          <div key={bi} style={{ marginBottom: '0.5rem' }}>
+                            <div style={{ fontSize: '0.875rem', color: '#555', marginBottom: '0.35rem' }}>
+                              🔧 {b.name}
+                            </div>
+                            <DiffView filePath={diffProps.filePath} segments={diffProps.segments} />
+                          </div>
+                        );
+                      }
                       return (
                         <LiveCollapsible
                           key={bi}

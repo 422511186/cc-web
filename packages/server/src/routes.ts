@@ -47,6 +47,24 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager, image
     }
   });
 
+  // DELETE /api/projects/:projectId/sessions/:sessionId - 删除一条历史会话
+  router.delete('/projects/:projectId/sessions/:sessionId', async (req, res) => {
+    try {
+      const { projectId, sessionId } = req.params;
+      const deleted = await store.deleteSession(projectId, sessionId);
+
+      if (!deleted) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+
+      res.json({ ok: true });
+    } catch (error) {
+      // 路径穿越等非法请求按 400 处理
+      res.status(400).json({ error: 'Failed to delete session' });
+    }
+  });
+
   // GET /api/sessions/:sessionId
   router.get('/sessions/:sessionId', async (req, res) => {
     try {

@@ -37,6 +37,8 @@ export const realSdkClient: SdkClient = {
       prompt: params.prompt,
       options: {
         resume: params.resume,
+        // 续写原会话,不 fork 出新 session(避免历史记录里堆积大量分叉)
+        ...(params.resume ? { forkSession: false } : {}),
         permissionMode: params.permissionMode as never,
         cwd: params.cwd,
         canUseTool: (toolName, input, opts) =>

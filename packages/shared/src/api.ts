@@ -66,3 +66,11 @@ export interface SearchResponse {
     }>;
   }>;
 }
+
+export interface NewSessionRequest {
+  cwd?: string;
+}
+
+export interface NewSessionResponse {
+  runId: string;
+}

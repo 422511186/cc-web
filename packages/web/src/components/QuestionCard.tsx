@@ -12,6 +12,7 @@ export function QuestionCard({
   const [selected, setSelected] = useState<string[][]>(
     prompt.questions.map(() => [])
   );
+  const [submitted, setSubmitted] = useState(false);
 
   function toggle(qi: number, label: string, multi: boolean) {
     setSelected((prev) => {
@@ -28,6 +29,12 @@ export function QuestionCard({
   }
 
   const allAnswered = selected.every((arr) => arr.length > 0);
+
+  const handleSubmit = () => {
+    if (submitted) return;
+    setSubmitted(true);
+    onAnswer({ kind: "question", id: prompt.id, answers: selected });
+  };
 
   return (
     <div className="card card-question">
@@ -59,10 +66,8 @@ export function QuestionCard({
       <div className="card-actions">
         <button
           className="btn btn-allow"
-          disabled={!allAnswered}
-          onClick={() =>
-            onAnswer({ kind: "question", id: prompt.id, answers: selected })
-          }
+          disabled={!allAnswered || submitted}
+          onClick={handleSubmit}
         >
           提交
         </button>

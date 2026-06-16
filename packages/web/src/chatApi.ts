@@ -12,28 +12,38 @@ function authHeaders(): Record<string, string> {
 }
 
 /** 新建对话,返回 runId */
-export async function startNew(): Promise<string> {
+export async function startNew(cwd?: string): Promise<string> {
   const res = await fetch("/api/sessions/new", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(cwd ? { cwd } : {}),
   });
   if (!res.ok) throw new Error(`startNew failed: ${res.status}`);
   const body = (await res.json()) as StartSessionResponse;
   return body.runId;
 }
 
-/** 续聊已有 session,返回 runId */
-export async function startContinue(sessionId: string): Promise<string> {
+/** 续聊已有 session,返回 runId。projectId 用于后端定位 session 真实项目目录 */
+export async function startContinue(
+  sessionId: string,
+  projectId?: string
+): Promise<string> {
   const res = await fetch(
     `/api/sessions/${encodeURIComponent(sessionId)}/continue`,
     {
       method: "POST",
       headers: { ...authHeaders(), "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ projectId }),
     }
   );
-  if (!res.ok) throw new Error(`startContinue failed: ${res.status}`);
+  if (!res.ok) {
+    // 原项目目录已删除等情况后端返回 409 + 友好 error,透传给用户
+    const msg = await res
+      .json()
+      .then((b: { error?: string }) => b?.error)
+      .catch(() => undefined);
+    throw new Error(msg ?? `startContinue failed: ${res.status}`);
+  }
   const body = (await res.json()) as StartSessionResponse;
   return body.runId;
 }
@@ -62,6 +72,29 @@ export async function respond(
     body: JSON.stringify(answer),
   });
   if (!res.ok) throw new Error(`respond failed: ${res.status}`);
+}
+
+/** 优雅分离会话(切换会话/关闭页面)。后台正在执行的任务不会被中断,会跑完后自然回收。
+ * 尽力而为:失败静默,不打断切换。keepalive 让请求在页面卸载时仍能发出。 */
+export async function closeSession(runId: string): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      headers: { ...authHeaders() },
+      keepalive: true,
+    });
+  } catch {
+    /* 关闭是尽力而为,忽略网络错误 */
+  }
+}
+
+/** 强制终止会话执行(用户点击停止按钮) */
+export async function abortSession(runId: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/abort`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw new Error(`abortSession failed: ${res.status}`);
 }
 
 /** 上传一个文件,返回引用 */

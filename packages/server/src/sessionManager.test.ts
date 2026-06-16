@@ -12,10 +12,14 @@ const idleClient: SdkClient = {
 };
 
 function makeManager(
-  overrides: Partial<{ maxConcurrent: number; idleTimeoutMs: number }> = {}
+  overrides: Partial<{
+    maxConcurrent: number;
+    idleTimeoutMs: number;
+    client: SdkClient;
+  }> = {}
 ) {
   return new SessionManager({
-    client: idleClient,
+    client: overrides.client ?? idleClient,
     permissionMode: "default",
     maxConcurrent: overrides.maxConcurrent ?? 5,
     idleTimeoutMs: overrides.idleTimeoutMs ?? 60_000,
@@ -47,6 +51,64 @@ describe("SessionManager", () => {
     const runId = mgr.startNew(() => () => {});
     mgr.close(runId, "aborted");
     expect(mgr.get(runId)).toBeUndefined();
+  });
+
+  it("detach 优雅分离会话:不 abort,从池中移除并调用 session.detach", () => {
+    const mgr = makeManager();
+    const runId = mgr.startNew(() => () => {});
+    const session = mgr.get(runId)!;
+    const detachSpy = vi.spyOn(session, "detach");
+    mgr.detach(runId);
+    expect(detachSpy).toHaveBeenCalledOnce();
+    expect(mgr.get(runId)).toBeUndefined();
+  });
+
+  it("detach 未知 runId 安全无操作", () => {
+    const mgr = makeManager();
+    expect(() => mgr.detach("ghost")).not.toThrow();
+  });
+
+  it("release 忙碌会话:保活,留在池中(仅前端断开,后台继续)", () => {
+    const mgr = makeManager();
+    const runId = mgr.startNew(() => () => {});
+    const session = mgr.get(runId)!;
+    session.send("go"); // 进入执行中 → isBusy
+    const detachSpy = vi.spyOn(session, "detach");
+    mgr.release(runId);
+    expect(detachSpy).not.toHaveBeenCalled();
+    expect(mgr.get(runId)).toBeDefined(); // 仍在池中,可重连接管
+  });
+
+  it("release 空闲会话:立即回收(detach 腾出并发槽)", () => {
+    const mgr = makeManager();
+    const runId = mgr.startNew(() => () => {});
+    const session = mgr.get(runId)!;
+    const detachSpy = vi.spyOn(session, "detach");
+    mgr.release(runId); // 没 send,isBusy=false
+    expect(detachSpy).toHaveBeenCalledOnce();
+    expect(mgr.get(runId)).toBeUndefined();
+  });
+
+  it("release 未知 runId 安全无操作", () => {
+    const mgr = makeManager();
+    expect(() => mgr.release("ghost")).not.toThrow();
+  });
+
+  it("事件流续期空闲计时器:执行中持续 emit,不会被空闲超时误杀", () => {
+    vi.useFakeTimers();
+    const mgr = makeManager({ idleTimeoutMs: 1000 });
+    const runId = mgr.startNew(() => () => {});
+    // 模拟会话在 800ms、1600ms 各 emit 一次事件(执行中的流式输出)
+    vi.advanceTimersByTime(800);
+    mgr.onSessionEvent(runId); // 事件到达 → 续期
+    vi.advanceTimersByTime(800);
+    expect(mgr.get(runId)).toBeDefined(); // 距上次事件仅 800ms,未超时
+    mgr.onSessionEvent(runId);
+    vi.advanceTimersByTime(800);
+    expect(mgr.get(runId)).toBeDefined();
+    vi.advanceTimersByTime(300); // 静默累计超过 1000ms
+    expect(mgr.get(runId)).toBeUndefined();
+    vi.useRealTimers();
   });
 
   it("idle timeout closes the session", async () => {

@@ -62,6 +62,13 @@ export type PromptAnswer = QuestionAnswer | PermissionAnswer | PlanAnswer;
 
 // ── SSE 事件:服务端 → 前端 ──
 
+/** 用户消息回显:用户发的提问由服务端回显进事件流,
+ *  使重连(整段重放)后仍能看到自己发出的消息,也让多端/多订阅者一致。 */
+export interface UserMessageEvent {
+  type: "user_message";
+  text: string;
+}
+
 /** 助手逐字增量(流式) */
 export interface DeltaEvent {
   type: "delta";
@@ -107,17 +114,39 @@ export interface ErrorEvent {
 /** 会话被回收/关闭 */
 export interface ClosedEvent {
   type: "closed";
-  reason: "idle" | "aborted" | "exited";
+  reason: "idle" | "aborted" | "exited" | "detached";
+}
+
+/** 执行状态:供前端明确展示「执行中 / 空闲可发下一条 / 等待你回答待答项」。
+ *  重连整段重放后,最后一个 status 即当前真实状态。 */
+export interface StatusEvent {
+  type: "status";
+  /** executing=有一轮在跑;waiting=出现待答项等用户回答;idle=空闲可发下一条 */
+  state: "idle" | "executing" | "waiting";
+}
+
+/** 当前活跃 run 的模型与推理强度信息。
+ *  注意:推理强度(effort)在 SDK 输出流与历史 JSONL 中均不可得(它只是输入项),
+ *  故 effort 通常缺失,前端据此展示「不可用」。 */
+export interface RunInfoEvent {
+  type: "run_info";
+  /** 模型标识,如 'claude-opus-4-8',来自首条 assistant SDK 消息的 message.model */
+  model?: string;
+  /** 推理强度('low'|'medium'|'high'|'xhigh'|'max');SDK 输出流不携带,通常缺失 */
+  effort?: string;
 }
 
 export type ServerEvent =
+  | UserMessageEvent
   | DeltaEvent
   | BlockEvent
   | ToolResultEvent
   | PromptEvent
   | TurnEndEvent
   | ErrorEvent
-  | ClosedEvent;
+  | ClosedEvent
+  | StatusEvent
+  | RunInfoEvent;
 
 // ── REST 请求/响应(续聊相关) ──
 

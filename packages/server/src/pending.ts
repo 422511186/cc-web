@@ -39,6 +39,11 @@ export class PendingRegistry {
     return this.entries.has(id);
   }
 
+  /** 是否还有任何未决项(用于判断会话是否在等用户回答) */
+  hasAny(): boolean {
+    return this.entries.size > 0;
+  }
+
   rejectAll(err: Error): void {
     for (const entry of this.entries.values()) {
       entry.reject(err);

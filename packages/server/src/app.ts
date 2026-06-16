@@ -1,5 +1,5 @@
 import express, { type Express } from "express";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 import type { Config } from "./config.js";
 import type { SessionStore } from "./store.js";
 import type { SSEManager } from "./sse.js";
@@ -38,7 +38,16 @@ export function createApp(
     idleTimeoutMs: config.idleTimeoutMs,
     cwd: config.claudeProjectsDir,
   });
-  app.use("/api", createChatRouter(manager));
+  // 续聊时按 session 真实项目目录定位 resume,目录已删则前置拦截
+  app.use(
+    "/api",
+    createChatRouter(
+      manager,
+      (projectId, sessionId) =>
+        projectId ? store.getSessionCwd(projectId, sessionId) : Promise.resolve(null),
+      (cwd) => existsSync(cwd)
+    )
+  );
   app.use("/api/uploads", createUploadRouter(config.uploadsDir));
 
   return app;
