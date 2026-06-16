@@ -113,24 +113,6 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
         borderBottom: '1px solid #e8e8e8',
         backgroundColor: '#fff',
       }}>
-        <input
-          type="text"
-          placeholder="搜索会话..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          style={{
-            width: '100%',
-            padding: '0.625rem 0.875rem',
-            border: '1px solid #e0e0e0',
-            borderRadius: '6px',
-            marginBottom: '0.75rem',
-            fontSize: '0.875rem',
-            outline: 'none',
-            transition: 'border-color 0.2s',
-          }}
-          onFocus={(e) => e.target.style.borderColor = '#1976d2'}
-          onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
-        />
         <button
           onClick={handleNewClick}
           style={{
@@ -243,13 +225,30 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
                         position: 'absolute',
                         top: '0.5rem',
                         right: '0.75rem',
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#c62828',
+                        width: '24px',
+                        height: '24px',
+                        background: '#fff',
+                        border: '1px solid #e0e0e0',
+                        borderRadius: '6px',
+                        color: '#666',
                         cursor: 'pointer',
                         fontSize: '0.875rem',
-                        padding: '0.25rem',
+                        padding: 0,
                         lineHeight: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.2s',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#ffebee';
+                        e.currentTarget.style.borderColor = '#ef5350';
+                        e.currentTarget.style.color = '#c62828';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#fff';
+                        e.currentTarget.style.borderColor = '#e0e0e0';
+                        e.currentTarget.style.color = '#666';
                       }}
                     >
                       ✕
