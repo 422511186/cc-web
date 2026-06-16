@@ -501,6 +501,9 @@
   .status-bar {
     flex-wrap: wrap !important;
     gap: 0.5rem !important;
+    /* 关键:flex 列布局里固定不被压缩,否则 conversation-container 的 height:100%
+       会把状态栏(含汉堡按钮+连接信息)挤出视口,移动端就"丢失"了 */
+    flex-shrink: 0 !important;
   }
 
   .status-bar > span {
