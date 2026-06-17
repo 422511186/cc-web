@@ -123,4 +123,44 @@ describe("Composer", () => {
     expect(screen.getByText("发送")).toBeInTheDocument();
     expect(screen.queryByText("⏹ 停止")).not.toBeInTheDocument();
   });
+
+  test("IME 输入法确认候选词的 Enter 不触发发送", () => {
+    const onSend = vi.fn();
+
+    render(<Composer disabled={false} onSend={onSend} />);
+
+    const textarea = screen.getByPlaceholderText("输入消息…") as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "你好" } });
+
+    // 模拟 IME 组合中按 Enter（确认候选词）
+    fireEvent.keyDown(textarea, {
+      key: "Enter",
+      shiftKey: false,
+      isComposing: true  // 关键：IME 输入法确认候选词时 isComposing 为 true
+    });
+
+    // 不应触发发送
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("你好"); // 文本未清空
+  });
+
+  test("非 IME 状态按 Enter 正常发送", async () => {
+    const onSend = vi.fn(() => Promise.resolve());
+
+    render(<Composer disabled={false} onSend={onSend} />);
+
+    const textarea = screen.getByPlaceholderText("输入消息…") as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "hello" } });
+
+    // 模拟非 IME 状态按 Enter
+    fireEvent.keyDown(textarea, {
+      key: "Enter",
+      shiftKey: false,
+      isComposing: false
+    });
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+  });
 });

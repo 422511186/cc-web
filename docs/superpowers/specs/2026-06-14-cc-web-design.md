@@ -3,7 +3,7 @@
 将本地 Claude Code 的聊天搬上 Web,支持浏览历史并在网页(含手机)里继续对话。
 
 - 日期:2026-06-14（初版）
-- 最后更新:2026-06-16（实现后澄清）
+- 最后更新:2026-06-17（夜）
 - 状态:✅ 已实现，文档已根据实际代码更新
 
 ## 1. 目标与范围
@@ -27,7 +27,7 @@
 - 历史记录的编辑、导出（**删除已实现**: `DELETE /api/projects/:id/sessions/:sessionId`）
 - 数据库持久化(直接读 `.jsonl`)
 - 搜索索引(MVP 用内存全文扫描)
-- **Diff 生成**（权限卡片暂只显示参数摘要，不生成 Edit/Write 工具的实时 diff）
+- **复杂 DiffBuilder 增强**（当前已实现 Edit / Write 工具的轻量 diff 预览；更复杂的 MultiEdit 合并与上下文增强留待后续迭代）
 
 ## 2. 整体架构
 
@@ -124,11 +124,10 @@ MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建
 
 > **注**: 实际实现中，运行时路由使用 `runId`（活跃会话运行时标识），续聊时 `runId = sessionId`，新建时 `runId` 为随机 UUID。
 
-所有路由前置鉴权中间件。
+所有 `/api` 路由前置鉴权中间件。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `POST` | `/api/auth` | 用密码/令牌换取会话 cookie/JWT |
 | `GET` | `/api/projects` | 列出所有项目 |
 | `GET` | `/api/projects/:id/sessions` | 列出某项目下的 session(标题、时间、消息数) |
 | `GET` | `/api/sessions/:id` | 读取某 session 完整消息(需带 `?projectId=`) |
@@ -136,13 +135,21 @@ MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建
 | `DELETE` | `/api/projects/:projectId/sessions/:sessionId` | 删除历史会话（已实现） |
 | `POST` | `/api/sessions/new` | 新建对话，返回 `{runId}` |
 | `POST` | `/api/sessions/:sessionId/continue` | 续聊（runId 复用 sessionId），需带 `projectId` 定位原工作目录 |
+| `GET` | `/api/sessions/:runId` | 探测某活跃 run 是否仍在后端池中（前端恢复旧连接前先判活） |
 | `GET` | `/api/sessions/:runId/stream` | SSE:流式接收回复 + 待答事项（**重连整段重放全量事件日志**） |
 | `POST` | `/api/sessions/:runId/message` | 发送用户消息（`text` + 可选 `attachments`） |
 | `POST` | `/api/sessions/:runId/respond` | 提交答案（权限 / 选项 / 计划），`interactionId` 在请求体中 |
-| `POST` | `/api/sessions/:runId/abort` | 强制中止执行 |
+| `POST` | `/api/sessions/:runId/abort` | 停止当前轮次执行，但保留会话以便后续继续输入 |
 | `DELETE` | `/api/sessions/:runId` | 释放会话（忙碌保活 / 空闲回收） |
 | `POST` | `/api/uploads` | 上传附件，返回 `{ref, filename}` |
 | `GET` | `/api/image?path=` | 读取粘贴图片（限 `CLAUDE_IMAGE_CACHE_DIR` 下） |
+
+鉴权边界：
+
+- 普通 REST API 使用 `Authorization: Bearer <token>`。
+- query token 仅保留给浏览器原生受限场景：`GET /api/events`、`GET /api/image`、`GET /api/sessions/:runId/stream`。
+- 当前没有单独的 `/api/auth` 登录换票接口；前端登录本质上是保存用户输入的静态 token。
+- 若浏览类 API 返回 `401 Unauthorized`，前端会自动清理本地 `sessionStorage` 中的 `authToken` / `cc-web-activeRuns`，断开浏览 SSE，并退回登录页；这表示“本地保存的静态 token 已失效或与服务端配置不匹配”。
 
 ## 6. 前端 UI 设计
 
@@ -217,6 +224,7 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 1. **release()**：前端切走/关页面时调用（`DELETE /sessions/:runId`）
    - 若会话**忙碌**（executing 或有待答项）→ 保留在池，后台继续跑，等待重连
    - 若会话**空闲** → 立即 `detach()` 回收资源
+   - 但前端**普通切换会话**不再默认调用该接口；切换只是切视图，不应隐式放弃当前 run
    
 2. **detach()**：优雅分离
    - 停止接收新输入，拒绝未决待答项
@@ -227,6 +235,8 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
    - 发送 abort 信号中止 SDK 执行
    - 拒绝所有未决 promise
    - 发送 `closed` 事件（reason: `idle` / `aborted` / `exited`）
+
+补充：`POST /api/sessions/:runId/abort` 现在走的是“停止当前轮次”语义，而不是 `close()` 语义。它会尽快中止当前执行，并把状态切回 `idle`，但**不会**发送 `closed`，也不会把会话从活跃池中移除。
 
 ### Hub 与事件重放
 
@@ -242,7 +252,10 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 - **子进程崩溃/退出**：SSE 推 `error` 事件，前端显示「会话中断」，可重试
 - **空闲超时**（3 分钟无事件产出）：自动回收会话，释放资源
 - **并发上限**：限制同时运行的会话数（`MAX_CONCURRENT_SESSIONS`），防止资源耗尽
-- **前端**：SSE 断线自动重连，重连后整段重放事件日志恢复状态；网络/发送失败给明确提示
+- **前端**：续聊 SSE 断线自动重连，重连后整段重放事件日志恢复状态；网络/发送失败给明确提示
+- **恢复旧 run**：前端恢复持久化 `activeRuns` 时，会先调用 `GET /api/sessions/:runId` 做快速探活；若 run 已失效，则立即清理本地记录并回到“在此继续”，避免卡在慢重连里
+- **浏览 SSE**：`ApiClient` 显式持有 `/api/events` 连接，并在退出登录时通过 `disconnect()` 主动关闭，避免旧连接滞留
+- **静态 token 失效**：浏览态请求若收到 `401`，前端会自动清理本地登录态并退回登录页，避免界面停留在“已登录但所有请求都失败”的假状态
 
 ## 9. 安全
 

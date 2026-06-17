@@ -22,6 +22,8 @@ export interface PermissionPrompt {
   title: string;
   /** 工具入参的可读摘要(如 Bash 命令、要改的文件路径) */
   detail: string;
+  /** 可选:Edit/Write 工具的 unified diff 预览 */
+  diff?: string;
 }
 
 /** 计划审批(ExitPlanMode):Claude 提交一份计划,需用户批准/拒绝 */

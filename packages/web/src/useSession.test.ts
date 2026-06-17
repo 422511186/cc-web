@@ -6,6 +6,9 @@ import type { ServerEvent } from '@cc-web/shared';
 // 受控的 EventSource mock:能手动触发 open / message
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
@@ -95,9 +98,202 @@ describe('useSession 服务端回显与重连重建', () => {
       vi.useRealTimers();
     }
   });
+
+  test('重连 onopen 到首条重放事件之间保留旧消息,避免界面闪烁清空', () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useSession('run-1'));
+
+      act(() => {
+        FakeEventSource.instances[0].onopen?.();
+        FakeEventSource.instances[0].emit({ type: 'user_message', text: '旧问题' } as ServerEvent);
+        FakeEventSource.instances[0].emit({ type: 'delta', text: '旧回答' } as ServerEvent);
+      });
+
+      expect(result.current.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+
+      act(() => {
+        FakeEventSource.instances[0].onerror?.();
+      });
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      const reconnectEs = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+      act(() => {
+        reconnectEs.onopen?.();
+      });
+
+      // 在首条重放事件到来前,旧消息仍保留,不应瞬间清空造成闪烁
+      expect(result.current.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.streaming
+      ).toBe('旧回答');
+
+      act(() => {
+        reconnectEs.emit({ type: 'user_message', text: '旧问题' } as ServerEvent);
+        reconnectEs.emit({ type: 'delta', text: '旧回答' } as ServerEvent);
+      });
+
+      expect(result.current.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.streaming
+      ).toBe('旧回答');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('turn_end 不应追加空 assistant 消息,下一轮对话仍能正常分隔', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'user_message', text: '第一问' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'delta', text: '第一答' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'turn_end' } as ServerEvent);
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0]).toMatchObject({
+      role: 'user',
+      blocks: [{ kind: 'text', text: '第一问' }],
+    });
+    expect(result.current.messages[1]).toMatchObject({
+      role: 'assistant',
+      streaming: '第一答',
+    });
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'user_message', text: '第二问' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'delta', text: '第二答' } as ServerEvent);
+    });
+
+    expect(result.current.messages).toHaveLength(4);
+    expect(result.current.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    expect(result.current.messages[3]).toMatchObject({
+      role: 'assistant',
+      streaming: '第二答',
+    });
+  });
 });
 
 describe('useSession 执行状态与模型信息', () => {
+  test('apply callback 应有空依赖数组防止重渲染时重新创建导致 SSE 重连', () => {
+    const { result, rerender } = renderHook(() => useSession('run-1'));
+
+    const firstES = FakeEventSource.instances[FakeEventSource.instances.length - 1];
+
+    // 强制重渲染（模拟父组件 state 变化）
+    rerender();
+    rerender();
+    rerender();
+
+    // 不应创建新的 EventSource：apply 稳定，useEffect 依赖不变
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0]).toBe(firstES);
+  });
+
+  test('重连使用指数退避算法，最多 5 次后停止', () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useSession('run-1'));
+
+      // 触发断开
+      act(() => {
+        FakeEventSource.instances[0].onerror?.();
+      });
+
+      // 第1次重连：1秒后
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(FakeEventSource.instances).toHaveLength(2);
+
+      // 第2次断开
+      act(() => {
+        FakeEventSource.instances[1].onerror?.();
+      });
+
+      // 第2次重连：2秒后
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(FakeEventSource.instances).toHaveLength(3);
+
+      // 第3次断开
+      act(() => {
+        FakeEventSource.instances[2].onerror?.();
+      });
+
+      // 第3次重连：4秒后
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(FakeEventSource.instances).toHaveLength(4);
+
+      // 第4次断开
+      act(() => {
+        FakeEventSource.instances[3].onerror?.();
+      });
+
+      // 第4次重连：8秒后
+      act(() => {
+        vi.advanceTimersByTime(8000);
+      });
+      expect(FakeEventSource.instances).toHaveLength(5);
+
+      // 第5次断开
+      act(() => {
+        FakeEventSource.instances[4].onerror?.();
+      });
+
+      // 第5次重连：16秒后
+      act(() => {
+        vi.advanceTimersByTime(16000);
+      });
+      expect(FakeEventSource.instances).toHaveLength(6);
+
+      // 第6次断开 - 已达上限，不应再重连
+      act(() => {
+        FakeEventSource.instances[5].onerror?.();
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(32000);
+      });
+
+      // 仍然是6个实例，没有第7次重连
+      expect(FakeEventSource.instances).toHaveLength(6);
+
+      // error 应该设置为"重连失败"
+      expect(result.current.error).toContain('重连');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('未收到 onopen/onmessage 前,不应仅凭 readyState 延迟检查标记已连接', () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useSession('run-1'));
+
+      FakeEventSource.instances[0].readyState = 1;
+
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+
+      expect(result.current.connected).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('status 事件更新 status 字段(idle/executing/waiting)', () => {
     const { result } = renderHook(() => useSession('run-1'));
     // 默认空闲

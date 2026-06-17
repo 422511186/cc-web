@@ -3,6 +3,7 @@ import { Session } from "./session.js";
 import type { SdkClient, StartQueryParams } from "./sdk.js";
 import type { ServerEvent } from "@cc-web/shared";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 /** 用一个可手动投递消息的 fake SDK 客户端 */
 function fakeClient(
@@ -426,5 +427,143 @@ describe("Session", () => {
     expect(closedEvents).toHaveLength(1);
     expect(closedEvents[0]).toEqual({ type: "closed", reason: "detached" });
     expect(captured!.abortController.signal.aborted).toBe(false);
+  });
+
+  it("续聊第二轮用不同模型时应重新上报新模型", async () => {
+    let round = 0;
+    const client = fakeClient(async function* (params) {
+      for await (const _msg of params.prompt) {
+        round++;
+        const model = round === 1 ? "claude-opus-4-8" : "claude-sonnet-4-6";
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model,
+            content: [{ type: "text", text: "reply" }],
+          },
+          parent_tool_use_id: null,
+          uuid: `u${round}`,
+          session_id: "s1",
+        } as unknown as SDKMessage;
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "ok",
+          session_id: "s1",
+          uuid: `r${round}`,
+        } as unknown as SDKMessage;
+      }
+    });
+
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+
+    // 不直接 await runToCompletion,让它在后台运行
+    void session.runToCompletion();
+
+    // 第一轮
+    session.send("first");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 第二轮
+    session.send("second");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 关闭以结束循环
+    session.close("done");
+
+    const runInfos = events.filter((e) => e.type === "run_info");
+    // 修复后:每次 send 重置 reportedModel,两轮不同模型都会上报
+    expect(runInfos).toHaveLength(2);
+    expect(runInfos[0]).toEqual({ type: "run_info", model: "claude-opus-4-8" });
+    expect(runInfos[1]).toEqual({ type: "run_info", model: "claude-sonnet-4-6" });
+  });
+
+  it("abortCurrentTurn 只停止当前轮次,不发 closed 终态", async () => {
+    let captured: StartQueryParams | null = null;
+    const client = fakeClient(async function* (params) {
+      captured = params;
+      for await (const _msg of params.prompt) {
+        await new Promise(() => {});
+      }
+    });
+
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+    session.send("long task");
+    void session.runToCompletion();
+    await new Promise((r) => setTimeout(r, 20));
+
+    session.abortCurrentTurn();
+
+    expect(captured!.abortController.signal.aborted).toBe(true);
+    expect(events).toContainEqual({ type: "status", state: "idle" });
+    expect(events.some((e) => e.type === "closed")).toBe(false);
+    expect(session.isBusy()).toBe(false);
+  });
+
+  it("abortCurrentTurn 后下一次启动应复用已学习到的 session id", async () => {
+    const starts: Array<{ resume?: string }> = [];
+    const client: SdkClient = {
+      start: async function* (params) {
+        starts.push({ resume: params.resume });
+        let turn = 0;
+        for await (const _msg of params.prompt) {
+          turn++;
+          if (starts.length === 1 && turn === 1) {
+            yield {
+              type: "assistant",
+              message: {
+                role: "assistant",
+                model: "claude-opus-4-8",
+                content: [{ type: "text", text: "first" }],
+              },
+              parent_tool_use_id: null,
+              uuid: "u1",
+              session_id: "sdk-session-1",
+            } as unknown as SDKMessage;
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              result: "ok",
+              session_id: "sdk-session-1",
+              uuid: "r1",
+            } as unknown as SDKMessage;
+            continue;
+          }
+
+          if (starts.length === 1 && turn === 2) {
+            while (!params.abortController.signal.aborted) {
+              await new Promise((r) => setTimeout(r, 5));
+            }
+            return;
+          }
+
+          return;
+        }
+      },
+    };
+
+    const { onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+    const done = session.runToCompletion();
+
+    session.send("first");
+    await new Promise((r) => setTimeout(r, 40));
+
+    session.send("second");
+    await new Promise((r) => setTimeout(r, 20));
+    session.abortCurrentTurn();
+
+    await new Promise((r) => setTimeout(r, 20));
+    session.send("third");
+    await done;
+
+    expect(starts).toHaveLength(2);
+    expect(starts[0].resume).toBeUndefined();
+    expect(starts[1].resume).toBe("sdk-session-1");
   });
 });

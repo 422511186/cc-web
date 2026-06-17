@@ -42,4 +42,25 @@ describe("InputQueue", () => {
     for await (const msg of q) got.push(msg.message.content as string);
     expect(got).toEqual([]);
   });
+
+  it("P2-B8: 并发调用 next() 时第二个调用应覆盖 waiting，第一个调用应被拒绝返回 done=true", async () => {
+    const q = new InputQueue();
+    const iter = q[Symbol.asyncIterator]();
+
+    // 并发调用两次 next()，都在等待消息
+    const promise1 = iter.next();
+    const promise2 = iter.next();
+
+    // 推送一条消息，应该只有最后一个 waiting（promise2）收到
+    q.push("message");
+
+    // promise2 应该解析为消息
+    const result2 = await promise2;
+    expect(result2.done).toBe(false);
+    expect(result2.value.message.content).toBe("message");
+
+    // promise1 应该被拒绝，返回 done=true（修复后行为）
+    const result1 = await promise1;
+    expect(result1.done).toBe(true);
+  });
 });

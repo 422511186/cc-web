@@ -49,8 +49,21 @@ export function useSession(runId: string | null): SessionState {
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const rebuildingRef = useRef(false);
 
   const apply = useCallback((event: ServerEvent) => {
+    if (rebuildingRef.current) {
+      rebuildingRef.current = false;
+      setMessages([]);
+      setPending(null);
+      setError(null);
+      setStatus("idle");
+      setModel(null);
+      setEffort(null);
+      setClosed(false);
+      setClosedReason(null);
+    }
+
     switch (event.type) {
       case "user_message":
         setMessages((prev) => [
@@ -112,11 +125,6 @@ export function useSession(runId: string | null): SessionState {
         break;
       case "turn_end":
         setPending(null);
-        // 一轮结束:开一条新的空消息容器,下一轮 assistant 输出进新气泡
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", blocks: [], streaming: "" },
-        ]);
         break;
       case "error":
         setError(event.message);
@@ -146,6 +154,8 @@ export function useSession(runId: string | null): SessionState {
     setConnected(false);
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0; // 重连次数
+    const MAX_RETRIES = 5; // 最多重连5次
 
     function connect() {
       if (cancelled || !runId) return;
@@ -154,25 +164,16 @@ export function useSession(runId: string | null): SessionState {
       );
       esRef.current = es;
 
-      // 立即检查连接状态（某些浏览器 readyState 可能立即变为 OPEN）
-      const checkConnection = () => {
-        if (es.readyState === EventSource.OPEN) {
-          setConnected(true);
-        }
-      };
-
       es.onopen = () => {
-        // (重)连接成功:重置本地状态,随后吃服务端整段重放从零重建。
-        // 这样切走再切回(整段重放)不会与残留状态叠加导致重复。
-        setMessages([]);
-        setPending(null);
+        // (重)连接成功后等待首条重放事件时再原子重建。
+        // 这样在 onopen 到首条重放之间不会瞬间清空 UI 造成闪烁。
+        rebuildingRef.current = true;
         setError(null);
-        setStatus("idle");
-        setModel(null);
-        setEffort(null);
         setClosed(false);
         setClosedReason(null);
         setConnected(true);
+        // 连接成功，重置重试计数
+        retryCount = 0;
       };
       es.onmessage = (e) => {
         // 收到首条消息即视为已连接(onopen 可能延后触发)
@@ -186,12 +187,19 @@ export function useSession(runId: string | null): SessionState {
       es.onerror = () => {
         setConnected(false);
         es.close();
-        // 自动重连
-        retry = setTimeout(connect, 2000);
-      };
 
-      // 延迟检查连接状态（给 onopen 一点时间）
-      setTimeout(checkConnection, 100);
+        // 检查是否超过重试次数
+        if (retryCount >= MAX_RETRIES) {
+          setError('重连失败：已达最大重试次数');
+          return;
+        }
+
+        // 指数退避：1s, 2s, 4s, 8s, 16s
+        const delay = Math.pow(2, retryCount) * 1000;
+        retryCount++;
+
+        retry = setTimeout(connect, delay);
+      };
     }
     connect();
 

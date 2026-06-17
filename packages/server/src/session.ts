@@ -11,6 +11,7 @@ import type {
 import type { SdkClient } from "./sdk.js";
 import { InputQueue } from "./inputQueue.js";
 import { PendingRegistry } from "./pending.js";
+import { buildDiff } from "./diffBuilder.js";
 
 export interface SessionOptions {
   client: SdkClient;
@@ -37,6 +38,8 @@ export class Session {
   private opts: SessionOptions;
   private closed = false;
   private detached = false;
+  private abortingCurrentTurn = false;
+  private resumeId: string | undefined;
   /** 当前是否有一轮在执行(已 send、未到 turn_end) */
   private executing = false;
   /** 已 emit 过 run_info 的模型,避免每条 assistant 消息重复广播 */
@@ -44,11 +47,14 @@ export class Session {
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
+    this.resumeId = opts.resume;
   }
 
   /** 追加一条用户消息 */
   send(text: string): void {
     this.executing = true;
+    // 每次 send 重置 reportedModel,让续聊第二轮能重新上报新模型
+    this.reportedModel = null;
     // 回显进事件流:重连整段重放时仍能看到用户自己的提问
     this.emit({ type: "user_message", text });
     // 状态转移:开始执行
@@ -67,6 +73,21 @@ export class Session {
   /** 提交用户对某待答事项的回答;返回是否命中一个未决项 */
   answer(answer: PromptAnswer): boolean {
     return this.pending.settle(answer.id, answer);
+  }
+
+  /** 停止当前轮次:中止 SDK 当前执行,但保留会话与 SSE 连接,允许后续继续输入。 */
+  abortCurrentTurn(): void {
+    if (this.closed || this.detached) return;
+    const wasBusy = this.executing || this.pending.hasAny();
+    this.abortingCurrentTurn = true;
+    this.executing = false;
+    this.pending.rejectAll(new Error("turn aborted"));
+    this.abort.abort();
+    this.abort = new AbortController();
+    if (wasBusy) {
+      this.emit({ type: "turn_end", isError: true });
+    }
+    this.emit({ type: "status", state: "idle" });
   }
 
   /** 关闭会话:结束输入、abort SDK、拒绝未决项、发 closed 事件 */
@@ -117,12 +138,15 @@ export class Session {
     } else if (toolName === "ExitPlanMode") {
       prompt = { kind: "plan", id, plan: String(input.plan ?? "") };
     } else {
+      // 权限类工具:尝试生成 diff 预览
+      const diff = buildDiff(toolName, input);
       prompt = {
         kind: "permission",
         id,
         toolName,
         title: meta.title ?? `Claude wants to use ${toolName}`,
         detail: summarizeInput(toolName, input),
+        diff: diff ?? undefined, // 有 diff 则附加,否则省略
       };
     }
 
@@ -154,48 +178,64 @@ export class Session {
 
   /** 启动 SDK 查询并消费输出,直到一轮/多轮结束或被关闭 */
   async runToCompletion(): Promise<void> {
-    const canUseTool = async (
-      toolName: string,
-      input: Record<string, unknown>,
-      meta: { toolUseID: string; title?: string }
-    ): Promise<PermissionResult> => {
-      try {
-        const decision = await this.requestDecision(toolName, input, meta);
-        if (decision.behavior === "allow") {
-          return {
-            behavior: "allow",
-            updatedInput: decision.updatedInput ?? input,
-          };
+    while (!this.closed && !this.detached) {
+      const abortController = this.abort;
+      const canUseTool = async (
+        toolName: string,
+        input: Record<string, unknown>,
+        meta: { toolUseID: string; title?: string }
+      ): Promise<PermissionResult> => {
+        try {
+          const decision = await this.requestDecision(toolName, input, meta);
+          if (decision.behavior === "allow") {
+            return {
+              behavior: "allow",
+              updatedInput: decision.updatedInput ?? input,
+            };
+          }
+          return { behavior: "deny", message: decision.message };
+        } catch {
+          // 会话关闭/当前轮次停止导致 reject
+          return { behavior: "deny", message: "session closed" };
         }
-        return { behavior: "deny", message: decision.message };
-      } catch {
-        // 会话关闭导致 reject
-        return { behavior: "deny", message: "session closed" };
-      }
-    };
+      };
 
-    try {
-      const stream = this.opts.client.start({
-        prompt: this.input,
-        resume: this.opts.resume,
-        permissionMode: this.opts.permissionMode,
-        cwd: this.opts.cwd,
-        canUseTool,
-        abortController: this.abort,
-      });
+      try {
+        const stream = this.opts.client.start({
+          prompt: this.input,
+          resume: this.resumeId,
+          permissionMode: this.opts.permissionMode,
+          cwd: this.opts.cwd,
+          canUseTool,
+          abortController,
+        });
 
-      for await (const msg of stream) {
-        if (this.closed) break;
-        this.handleSdkMessage(msg);
+        for await (const msg of stream) {
+          if (this.closed || this.detached) break;
+          this.handleSdkMessage(msg);
+        }
+      } catch (err) {
+        const isTurnAbort =
+          this.abortingCurrentTurn || abortController.signal.aborted;
+        if (!this.closed && !this.detached && !isTurnAbort) {
+          this.emit({ type: "error", message: (err as Error).message });
+        }
       }
-    } catch (err) {
-      if (!this.closed) {
-        this.emit({ type: "error", message: (err as Error).message });
+
+      if (this.closed || this.detached) break;
+      if (this.abortingCurrentTurn || abortController.signal.aborted) {
+        this.abortingCurrentTurn = false;
+        continue;
       }
+      break;
     }
   }
 
   private handleSdkMessage(msg: SDKMessage): void {
+    const sessionId = (msg as { session_id?: string }).session_id;
+    if (sessionId) {
+      this.resumeId = sessionId;
+    }
     switch (msg.type) {
       case "stream_event": {
         const ev = (

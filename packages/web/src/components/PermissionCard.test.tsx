@@ -43,4 +43,68 @@ describe("PermissionCard", () => {
 
     expect(onAnswer).toHaveBeenCalledTimes(1);
   });
+
+  test("prompt.id 变化时应重置已回答状态,新权限卡片可继续作答", () => {
+    const onAnswer = vi.fn();
+    const { rerender } = render(<PermissionCard prompt={mockPrompt} onAnswer={onAnswer} />);
+
+    fireEvent.click(screen.getByText("✓ 允许"));
+    expect(screen.getByText("✓ 允许")).toBeDisabled();
+
+    const nextPrompt: PermissionPrompt = {
+      kind: "permission",
+      id: "perm-2",
+      title: "允许删除缓存?",
+      detail: "rm -rf .cache",
+    };
+
+    rerender(<PermissionCard prompt={nextPrompt} onAnswer={onAnswer} />);
+
+    const denyBtn = screen.getByText("✗ 拒绝");
+    expect(screen.getByText("✓ 允许")).not.toBeDisabled();
+    expect(denyBtn).not.toBeDisabled();
+
+    fireEvent.click(denyBtn);
+    expect(onAnswer).toHaveBeenLastCalledWith({
+      kind: "permission",
+      id: "perm-2",
+      decision: "deny",
+    });
+  });
+
+  test("显示 diff 预览(如果有)", () => {
+    const promptWithDiff: PermissionPrompt = {
+      kind: "permission",
+      id: "p1",
+      toolName: "Edit",
+      title: "Claude wants to edit app.ts",
+      detail: "/project/app.ts",
+      diff: `--- /project/app.ts
++++ /project/app.ts
+@@ -1,3 +1,3 @@
+ function hello() {
+-  console.log('hi');
++  console.log('hello world');
+ }`,
+    };
+
+    const onAnswer = vi.fn();
+    render(<PermissionCard prompt={promptWithDiff} onAnswer={onAnswer} />);
+
+    // 应显示标题和详情
+    expect(screen.getByText("Claude wants to edit app.ts")).toBeInTheDocument();
+    expect(screen.getByText("/project/app.ts")).toBeInTheDocument();
+
+    // 应显示 diff 预览
+    expect(screen.getByText(/console.log\('hi'\)/)).toBeInTheDocument();
+    expect(screen.getByText(/console.log\('hello world'\)/)).toBeInTheDocument();
+  });
+
+  test("无 diff 时不显示预览区域", () => {
+    const onAnswer = vi.fn();
+    const { container } = render(<PermissionCard prompt={mockPrompt} onAnswer={onAnswer} />);
+
+    // 不应有 diff-preview 元素
+    expect(container.querySelector(".diff-preview")).not.toBeInTheDocument();
+  });
 });

@@ -41,11 +41,19 @@ export const realSdkClient: SdkClient = {
         ...(params.resume ? { forkSession: false } : {}),
         permissionMode: params.permissionMode as never,
         cwd: params.cwd,
-        canUseTool: (toolName, input, opts) =>
-          params.canUseTool(toolName, input, {
-            toolUseID: opts.toolUseID,
-            title: opts.title,
-          }),
+        canUseTool: async (toolName, input, opts) => {
+          try {
+            return await params.canUseTool(toolName, input, {
+              toolUseID: opts.toolUseID,
+              title: opts.title,
+            });
+          } catch {
+            return {
+              behavior: "deny",
+              message: "tool permission callback failed",
+            } satisfies PermissionResult;
+          }
+        },
         includePartialMessages: true,
         abortController: params.abortController,
       },

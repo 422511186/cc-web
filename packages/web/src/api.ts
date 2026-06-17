@@ -15,7 +15,10 @@ interface SSESessionUpdate {
 class ApiClient {
   private eventSource: EventSource | null = null;
 
-  constructor(private token: string) {}
+  constructor(
+    private token: string,
+    private onUnauthorized?: () => void,
+  ) {}
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers);
@@ -28,6 +31,9 @@ class ApiClient {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        this.onUnauthorized?.();
+      }
       const error = await response.json().catch(() => ({ error: 'Unknown error' }));
       throw new Error(error.error || `HTTP ${response.status}`);
     }
@@ -77,41 +83,38 @@ class ApiClient {
 
     // Create new EventSource with auth token in URL (since EventSource doesn't support custom headers)
     const url = `${API_BASE}/events?token=${encodeURIComponent(this.token)}`;
-    console.log('Connecting to SSE:', url);
     this.eventSource = new EventSource(url);
-
-    this.eventSource.onopen = () => {
-      console.log('SSE connection established');
-    };
+    this.eventSource.onopen = () => {};
 
     this.eventSource.addEventListener('session-update', (event) => {
-      console.log('Received session-update:', event.data);
       try {
         const data = JSON.parse(event.data) as SSESessionUpdate;
         onSessionUpdate(data);
-      } catch (error) {
-        console.error('Failed to parse SSE message:', error);
+      } catch {
+        // 忽略损坏的 SSE 事件，保持连接
       }
     });
 
-    this.eventSource.onerror = (error) => {
-      console.error('SSE connection error:', error);
-      console.log('SSE readyState:', this.eventSource?.readyState);
-    };
+    this.eventSource.onerror = () => {};
 
     // Return cleanup function
     return () => {
-      console.log('Closing SSE connection');
-      if (this.eventSource) {
-        this.eventSource.close();
-        this.eventSource = null;
-      }
+      this.disconnect();
     };
+  }
+
+  disconnect(): void {
+    if (!this.eventSource) return;
+    this.eventSource.close();
+    this.eventSource = null;
   }
 }
 
-export function createApiClient(token: string): ApiClient {
-  return new ApiClient(token);
+export function createApiClient(
+  token: string,
+  onUnauthorized?: () => void,
+): ApiClient {
+  return new ApiClient(token, onUnauthorized);
 }
 
 export type { ApiClient };

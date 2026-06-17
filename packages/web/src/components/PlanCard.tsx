@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PlanPrompt, PlanAnswer } from "@cc-web/shared";
 
 export function PlanCard({
@@ -9,6 +9,10 @@ export function PlanCard({
   onAnswer: (a: PlanAnswer) => void;
 }) {
   const [answered, setAnswered] = useState(false);
+
+  useEffect(() => {
+    setAnswered(false);
+  }, [prompt.id]);
 
   const handleAnswer = (decision: "approve" | "reject") => {
     if (answered) return;

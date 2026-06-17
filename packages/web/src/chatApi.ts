@@ -48,6 +48,17 @@ export async function startContinue(
   return body.runId;
 }
 
+/** 快速探测一个 run 是否仍在后端活跃池中，供前端恢复旧连接前先判活。 */
+export async function probeRun(runId: string): Promise<boolean> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}`, {
+    method: "GET",
+    headers: { ...authHeaders() },
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`probeRun failed: ${res.status}`);
+  return true;
+}
+
 /** 发一条用户消息 */
 export async function sendMessage(
   runId: string,

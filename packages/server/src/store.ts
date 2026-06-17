@@ -31,17 +31,25 @@ export class SessionStore {
           if (stat.isDirectory()) {
             // 从该项目下的任一 session 文件读取真实的 cwd 作为项目路径
             const realPath = await this.getProjectRealPath(entry);
+            const hasEncodedWindowsPath = this.isEncodedWindowsProjectPath(entry);
 
             // 如果读取失败（没有 session 或读不到 cwd），尝试解码；
-            // 但如果解码后的路径不存在，跳过该项目
+            // 但只有“确实是编码路径”的目录名，才用解码后的路径做存在性过滤。
+            // 像 demo-project 这类非编码目录名无法可靠反推原始 cwd，不应因此被吞掉。
             const projectPath = realPath || this.decodeProjectPath(entry);
-            if (!this.dirExists(projectPath)) continue;
+            if ((realPath || hasEncodedWindowsPath) && !this.dirExists(projectPath)) continue;
 
             projects.push({
               id: entry,
               // 优先用真实路径的末段作为项目名(可保留名字里的连字符,如 cc-web-develop);
-              // 没有真实路径时退回到对目录名的解码(此时名字里的连字符无法区分,会丢失)
-              name: realPath ? this.basename(realPath) : this.decodeProjectName(entry),
+              // 没有真实路径时:
+              // - Windows 编码目录名退回解码后的末段
+              // - 非编码目录名直接保留原样,避免 demo-project → demo/project 这类误伤
+              name: realPath
+                ? this.basename(realPath)
+                : hasEncodedWindowsPath
+                  ? this.decodeProjectName(entry)
+                  : entry,
               path: projectPath,
             });
           }
@@ -185,9 +193,11 @@ export class SessionStore {
     const root = path.resolve(this.projectsDir);
     const target = path.resolve(this.projectsDir, projectId, `${sessionId}.jsonl`);
 
-    // 确认 target 严格位于 root 之下(防 ../ 穿越)
-    const rel = path.relative(root, target);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    // 修复 P2-B5: 更严格的路径穿越检测（防止 Windows 绝对路径误判）
+    // 使用 startsWith 检查而非 path.relative，后者在 Windows 下对绝对路径处理不可靠
+    const normalizedRoot = root + path.sep;
+    const normalizedTarget = target + path.sep;
+    if (!normalizedTarget.startsWith(normalizedRoot)) {
       throw new Error('Invalid session path: path traversal detected');
     }
 
@@ -201,6 +211,9 @@ export class SessionStore {
   }
 
   private decodeProjectName(encoded: string): string {
+    if (!this.isEncodedWindowsProjectPath(encoded)) {
+      return encoded;
+    }
     // Extract last segment from path
     // C--Users-huang-workspace-cc-web-develop -> cc-web-develop
     const decoded = this.decodeProjectPath(encoded);
@@ -214,18 +227,21 @@ export class SessionStore {
   }
 
   private decodeProjectPath(encoded: string): string {
+    if (!this.isEncodedWindowsProjectPath(encoded)) {
+      return encoded;
+    }
     // C--Users-huang-workspace-cc-web-develop -> C:/Users/huang/workspace/cc-web-develop
     // 先找到盘符部分（第一个 -- 前的内容 + --）
-    const driveMatch = encoded.match(/^([A-Z])--/);
-    if (!driveMatch) {
-      // 没有盘符，直接替换所有 - 为 /
-      return encoded.replace(/-/g, '/');
-    }
+    const driveMatch = encoded.match(/^([A-Z])--/)!;
 
     const driveLetter = driveMatch[1];
     const afterDrive = encoded.slice(driveMatch[0].length); // 去掉 "C--" 后的部分
     const pathPart = afterDrive.replace(/-/g, '/'); // 路径部分的 - 都替换为 /
 
     return `${driveLetter}:/${pathPart}`;
+  }
+
+  private isEncodedWindowsProjectPath(encoded: string): boolean {
+    return /^[A-Z]--/.test(encoded);
   }
 }

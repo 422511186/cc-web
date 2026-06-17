@@ -34,11 +34,6 @@ export class SessionManager {
     onEventFor: OnEventFactory,
     cwd?: string
   ): string {
-    if (this.entries.size >= this.opts.maxConcurrent) {
-      throw new Error(
-        `max concurrent sessions (${this.opts.maxConcurrent}) reached`
-      );
-    }
     const session = new Session({
       client: this.opts.client,
       permissionMode: this.opts.permissionMode,
@@ -50,6 +45,17 @@ export class SessionManager {
     });
     const timer = this.armTimer(runId);
     this.entries.set(runId, { session, timer });
+
+    // 插入后检查并发上限:若超限则回滚(关闭并移除刚创建的会话)
+    if (this.entries.size > this.opts.maxConcurrent) {
+      clearTimeout(timer);
+      this.entries.delete(runId);
+      session.close("aborted");
+      throw new Error(
+        `max concurrent sessions (${this.opts.maxConcurrent}) reached`
+      );
+    }
+
     // 后台跑,结束后自动清理。注意:续聊复用 sessionId 作 runId,旧会话流
     // 自然结束时,池中可能已是「重新续聊」重建的新会话——仅当 entry 仍是
     // 本会话本身时才回收,避免误杀同 runId 的新会话。
@@ -114,7 +120,9 @@ export class SessionManager {
 
   /** 强制终止会话执行(用户点击停止按钮) */
   abort(runId: string): void {
-    this.close(runId, "aborted");
+    const entry = this.entries.get(runId);
+    if (!entry) return;
+    entry.session.abortCurrentTurn();
   }
 
   /** 会话有事件产出时调用:续期空闲计时器(执行中的流不会被误杀) */

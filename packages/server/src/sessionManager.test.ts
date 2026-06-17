@@ -94,6 +94,18 @@ describe("SessionManager", () => {
     expect(() => mgr.release("ghost")).not.toThrow();
   });
 
+  it("abort 只停止当前轮次,不从池中移除会话", () => {
+    const mgr = makeManager();
+    const runId = mgr.startNew(() => () => {});
+    const session = mgr.get(runId)!;
+    const abortSpy = vi.spyOn(session, "abortCurrentTurn");
+
+    mgr.abort(runId);
+
+    expect(abortSpy).toHaveBeenCalledOnce();
+    expect(mgr.get(runId)).toBe(session);
+  });
+
   it("事件流续期空闲计时器:执行中持续 emit,不会被空闲超时误杀", () => {
     vi.useFakeTimers();
     const mgr = makeManager({ idleTimeoutMs: 1000 });
@@ -171,5 +183,30 @@ describe("SessionManager", () => {
 
     // 5) 新会话不得被旧流的兜底 close 误杀
     expect(mgr.get(runId)).toBe(second);
+  });
+
+  it("并发检查非原子:两个 startNew 同时检查 size 可能都通过并超出上限", async () => {
+    const mgr = makeManager({ maxConcurrent: 2 });
+
+    // 先占满 1 个槽位
+    mgr.startNew(() => () => {});
+
+    // 模拟并发场景:两个请求几乎同时到达
+    // 修复前:两个都会先检查 size(1) < maxConcurrent(2),都通过,最终池中有 3 个会话
+    // 修复后:插入后检查,第二个会回滚并抛错,最终池中只有 2 个会话
+    const promises = [
+      Promise.resolve().then(() => mgr.startNew(() => () => {})),
+      Promise.resolve().then(() => mgr.startNew(() => () => {})),
+    ];
+
+    const results = await Promise.allSettled(promises);
+
+    // 预期:有一个成功,一个失败(超限),最终池中只有 2 个会话
+    const successes = results.filter((r) => r.status === "fulfilled");
+    const failures = results.filter((r) => r.status === "rejected");
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as PromiseRejectedResult).reason.message).toMatch(/max concurrent/);
+    expect(mgr["entries"].size).toBe(2);
   });
 });

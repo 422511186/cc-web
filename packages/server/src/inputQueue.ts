@@ -44,6 +44,14 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
         if (this.closed) {
           return Promise.resolve({ value: undefined as never, done: true });
         }
+        // 修复 P2-B8: 拒绝被覆盖的 waiting promise，只保留最新的
+        if (this.waiting) {
+          const oldWaiting = this.waiting;
+          // 立即拒绝旧的 waiting，防止它永久挂起
+          Promise.resolve().then(() => {
+            oldWaiting({ value: undefined as never, done: true });
+          });
+        }
         return new Promise((resolve) => {
           this.waiting = resolve;
         });

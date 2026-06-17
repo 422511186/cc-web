@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { uploadFile } from "../chatApi.js";
 import { AttachmentPreview, type Attachment } from "./AttachmentPreview.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -46,6 +46,12 @@ export function Composer({
         trimmed,
         attachments.map((a) => a.ref)
       );
+      // Revoke Blob URLs before clearing attachments
+      attachments.forEach((a) => {
+        if (a.previewUrl) {
+          URL.revokeObjectURL(a.previewUrl);
+        }
+      });
       setText("");
       setAttachments([]);
     } finally {
@@ -53,13 +59,34 @@ export function Composer({
     }
   }
 
+  // Cleanup: revoke all Blob URLs on unmount
+  useEffect(() => {
+    const currentAttachments = attachments;
+    return () => {
+      // Capture attachments at mount time for cleanup
+      currentAttachments.forEach((a) => {
+        if (a.previewUrl) {
+          URL.revokeObjectURL(a.previewUrl);
+        }
+      });
+    };
+  }, [attachments]);
+
   return (
     <div className="composer">
       <AttachmentPreview
         items={attachments}
-        onRemove={(ref) =>
-          setAttachments((prev) => prev.filter((a) => a.ref !== ref))
-        }
+        onRemove={(ref) => {
+          setAttachments((prev) => {
+            // Find the attachment being removed
+            const removed = prev.find((a) => a.ref === ref);
+            // Revoke its Blob URL if it has one
+            if (removed?.previewUrl) {
+              URL.revokeObjectURL(removed.previewUrl);
+            }
+            return prev.filter((a) => a.ref !== ref);
+          });
+        }}
       />
       <div className="composer-row">
         <button
@@ -99,7 +126,8 @@ export function Composer({
           disabled={disabled || sending}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            // 修复 P2-F6: IME 输入法确认候选词时不触发发送
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               submit();
             }

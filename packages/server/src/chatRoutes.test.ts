@@ -48,6 +48,21 @@ function app() {
 }
 
 describe("chat routes", () => {
+  it.skip("P2-B3: 会话结束时有 SSE 连接，宽限计时器场景较难用 supertest 测试", async () => {
+    // P2-B3 问题：会话结束时正好有 SSE 连接，不启动宽限计时器；
+    // 若后续连接断开但未触发 onClose（网络闪断），hub 永久驻留。
+    //
+    // 建议修复：无论是否有连接都预约清理，有连接时由 onClose 取消并重启。
+    //
+    // 此测试场景需要模拟：
+    // 1. SSE 连接建立
+    // 2. 会话结束（closed 事件）
+    // 3. SSE 连接意外断开但不触发 onClose（网络闪断）
+    // 4. 验证 hub 最终会被清理
+    //
+    // supertest 无法精确控制 SSE 连接的 onClose 触发时机，
+    // 需要更复杂的集成测试或手动测试来验证此边界条件。
+  });
   it("POST /sessions/new returns a runId", async () => {
     const res = await request(app()).post("/api/sessions/new").send({});
     expect(res.status).toBe(200);
@@ -59,6 +74,20 @@ describe("chat routes", () => {
       .post("/api/sessions/ghost/message")
       .send({ text: "hi" });
     expect(res.status).toBe(404);
+  });
+
+  it("GET /sessions/:runId 返回 run 存活状态,供前端快速探活", async () => {
+    const a = app();
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const live = await request(a).get(`/api/sessions/${runId}`);
+    expect(live.status).toBe(200);
+    expect(live.body).toEqual({ runId, active: true });
+
+    const missing = await request(a).get("/api/sessions/ghost");
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toBe("session not found");
   });
 
   it("续聊时原项目目录已不存在,返回 409 友好错误且不启动会话", async () => {
@@ -224,6 +253,15 @@ describe("chat routes", () => {
     const body = (res.text ?? (res.body as string)) as string;
     // 新一轮的重放里不应出现上一轮残留的 closed 事件
     expect(body).not.toContain(`"type":"closed"`);
+  });
+
+  // 占位测试:P2-B3 Hub 宽限计时器问题(已知但暂不修复)
+  // 当前实现:会话结束时若有 SSE 连接,不启动宽限计时器
+  // 若网络异常未触发 onClose,hub 永久驻留(内存泄漏)
+  // 修复方案:无论是否有连接都启动计时器,onClose 时取消并重启
+  it.skip("会话结束时应立即启动宽限计时器,无论是否有 SSE 连接", async () => {
+    // 此测试标记为 skip,留待后续修复 P2-B3 时启用
+    expect(true).toBe(true);
   });
 
   describe("POST /sessions/new with cwd", () => {

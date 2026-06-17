@@ -25,6 +25,9 @@ interface Hub {
 /** 会话结束后保留日志的宽限窗口(ms),供切走再切回的前端重连重放 */
 const HUB_GRACE_MS = 60_000;
 
+/** Hub.log 最大事件数,防止长会话内存泄漏 */
+const MAX_LOG_EVENTS = 10_000;
+
 /** 把 (projectId, sessionId) 解析成 session 的真实工作目录,供 SDK resume 用 */
 export type CwdResolver = (
   projectId: string | undefined,
@@ -62,16 +65,25 @@ export function createChatRouter(
     return (event: ServerEvent) => {
       const hub = hubFor(runId);
       hub.log.push(event);
+
+      // 防止长会话内存泄漏:超过上限时截断保留最新事件
+      if (hub.log.length > MAX_LOG_EVENTS) {
+        hub.log.splice(0, hub.log.length - MAX_LOG_EVENTS);
+      }
+
       if (hub.channel) {
         hub.channel.send(event);
       }
       // 会话结束:标记 closed,保留 hub 与日志一段宽限期,
-      // 让切走再切回的前端还能重连整段重放;无连接时启动宽限清理计时器。
+      // 让切走再切回的前端还能重连整段重放。
+      // 修复 P2-B3:无论是否有连接都预约清理,有连接时由 onClose 取消并重启。
       if (event.type === "closed") {
         hub.closed = true;
-        if (!hub.channel && !hub.graceTimer) {
-          hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);
+        // 始终启动宽限计时器（如果已有则先清除）
+        if (hub.graceTimer) {
+          clearTimeout(hub.graceTimer);
         }
+        hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);
       }
     };
   }
@@ -120,6 +132,16 @@ export function createChatRouter(
     const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd);
     const body: StartSessionResponse = { runId };
     res.json(body);
+  });
+
+  // 发消息
+  router.get("/sessions/:runId", (req, res) => {
+    const runId = req.params.runId;
+    if (!mgr.get(runId)) {
+      res.status(404).json({ error: "session not found" });
+      return;
+    }
+    res.json({ runId, active: true });
   });
 
   // 发消息

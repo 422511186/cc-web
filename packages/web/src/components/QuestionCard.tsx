@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { QuestionPrompt, QuestionAnswer } from "@cc-web/shared";
 
 export function QuestionCard({
@@ -13,6 +13,11 @@ export function QuestionCard({
     prompt.questions.map(() => [])
   );
   const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    setSelected(prompt.questions.map(() => []));
+    setSubmitted(false);
+  }, [prompt.id, prompt.questions]);
 
   function toggle(qi: number, label: string, multi: boolean) {
     setSelected((prev) => {

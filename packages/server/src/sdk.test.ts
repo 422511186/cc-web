@@ -36,4 +36,30 @@ describe("realSdkClient", () => {
     expect(opts.resume).toBeUndefined();
     expect(opts.forkSession).toBeUndefined();
   });
+
+  it("canUseTool 回调抛错时应返回 deny,避免异常穿透到 SDK", async () => {
+    realSdkClient.start({
+      ...baseParams(),
+      canUseTool: async () => {
+        throw new Error("boom");
+      },
+    });
+
+    const opts = (queryMock.mock.calls[0][0] as {
+      options: {
+        canUseTool: (
+          toolName: string,
+          input: Record<string, unknown>,
+          meta: { toolUseID: string; title?: string }
+        ) => Promise<unknown>;
+      };
+    }).options;
+
+    await expect(
+      opts.canUseTool("Bash", { command: "echo hi" }, { toolUseID: "tool-1" })
+    ).resolves.toEqual({
+      behavior: "deny",
+      message: "tool permission callback failed",
+    });
+  });
 });

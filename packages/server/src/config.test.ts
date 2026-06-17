@@ -13,28 +13,28 @@ describe('loadConfig', () => {
   });
 
   it('should load config from environment variables', () => {
-    process.env.AUTH_TOKEN = 'test-token';
+    process.env.AUTH_TOKEN = 'test-token-123456'; // 16+ 字符
     process.env.PORT = '4000';
     process.env.CLAUDE_PROJECTS_DIR = '/custom/path';
     process.env.PERMISSION_MODE = 'acceptEdits';
 
     const config = loadConfig();
 
-    expect(config.authToken).toBe('test-token');
+    expect(config.authToken).toBe('test-token-123456');
     expect(config.port).toBe(4000);
     expect(config.claudeProjectsDir).toBe('/custom/path');
     expect(config.permissionMode).toBe('acceptEdits');
   });
 
   it('should use default values when env vars not set', () => {
-    process.env.AUTH_TOKEN = 'required-token';
+    process.env.AUTH_TOKEN = 'required-token-16'; // 16+ 字符
     delete process.env.PORT;
     delete process.env.CLAUDE_PROJECTS_DIR;
     delete process.env.PERMISSION_MODE;
 
     const config = loadConfig();
 
-    expect(config.authToken).toBe('required-token');
+    expect(config.authToken).toBe('required-token-16');
     expect(config.port).toBe(3000);
     expect(config.claudeProjectsDir).toContain('.claude');
     expect(config.claudeProjectsDir).toContain('projects');
@@ -48,7 +48,7 @@ describe('loadConfig', () => {
   });
 
   it('should parse port as number', () => {
-    process.env.AUTH_TOKEN = 'token';
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
     process.env.PORT = '8080';
 
     const config = loadConfig();
@@ -58,7 +58,7 @@ describe('loadConfig', () => {
   });
 
   it('should handle invalid port gracefully', () => {
-    process.env.AUTH_TOKEN = 'token';
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
     process.env.PORT = 'invalid';
 
     const config = loadConfig();
@@ -67,7 +67,7 @@ describe('loadConfig', () => {
   });
 
   it('parses session knobs with defaults', () => {
-    process.env.AUTH_TOKEN = 't';
+    process.env.AUTH_TOKEN = 't1234567890abcdef'; // 16+ 字符
     delete process.env.SESSION_IDLE_TIMEOUT_MS;
     delete process.env.MAX_CONCURRENT_SESSIONS;
     delete process.env.UPLOADS_DIR;
@@ -80,7 +80,7 @@ describe('loadConfig', () => {
   });
 
   it('overrides session knobs from env', () => {
-    process.env.AUTH_TOKEN = 't';
+    process.env.AUTH_TOKEN = 't1234567890abcdef'; // 16+ 字符
     process.env.SESSION_IDLE_TIMEOUT_MS = '5000';
     process.env.MAX_CONCURRENT_SESSIONS = '2';
     process.env.UPLOADS_DIR = '/tmp/up';
@@ -90,5 +90,75 @@ describe('loadConfig', () => {
     expect(config.idleTimeoutMs).toBe(5000);
     expect(config.maxConcurrent).toBe(2);
     expect(config.uploadsDir).toBe('/tmp/up');
+  });
+
+  it('should reject invalid PERMISSION_MODE', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    process.env.PERMISSION_MODE = 'god-mode';
+
+    expect(() => loadConfig()).toThrow(/PERMISSION_MODE/i);
+  });
+
+  it('should reject non-positive MAX_CONCURRENT_SESSIONS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    process.env.MAX_CONCURRENT_SESSIONS = '0';
+
+    expect(() => loadConfig()).toThrow(/MAX_CONCURRENT_SESSIONS/i);
+  });
+
+  it('should reject non-integer MAX_CONCURRENT_SESSIONS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    process.env.MAX_CONCURRENT_SESSIONS = '1.5';
+
+    expect(() => loadConfig()).toThrow(/MAX_CONCURRENT_SESSIONS/i);
+  });
+
+  it('should reject negative SESSION_IDLE_TIMEOUT_MS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
+    process.env.SESSION_IDLE_TIMEOUT_MS = '-1000';
+
+    expect(() => loadConfig()).toThrow('SESSION_IDLE_TIMEOUT_MS must be positive');
+  });
+
+  it('should reject zero SESSION_IDLE_TIMEOUT_MS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
+    process.env.SESSION_IDLE_TIMEOUT_MS = '0';
+
+    expect(() => loadConfig()).toThrow('SESSION_IDLE_TIMEOUT_MS must be positive');
+  });
+
+  it('should reject infinite SESSION_IDLE_TIMEOUT_MS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
+    process.env.SESSION_IDLE_TIMEOUT_MS = 'Infinity';
+
+    expect(() => loadConfig()).toThrow('SESSION_IDLE_TIMEOUT_MS must be positive');
+  });
+
+  it('should reject NaN SESSION_IDLE_TIMEOUT_MS', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890'; // 16+ 字符
+    process.env.SESSION_IDLE_TIMEOUT_MS = 'not-a-number';
+
+    expect(() => loadConfig()).toThrow('SESSION_IDLE_TIMEOUT_MS must be positive');
+  });
+
+  it('P2-B12: 应拒绝过短的 AUTH_TOKEN（少于 16 字符）', () => {
+    process.env.AUTH_TOKEN = 'short';
+
+    expect(() => loadConfig()).toThrow(/AUTH_TOKEN.*at least 16/i);
+  });
+
+  it('P2-B12: 应接受足够长的 AUTH_TOKEN（16 字符或更多）', () => {
+    process.env.AUTH_TOKEN = '1234567890123456'; // 正好 16 字符
+
+    const config = loadConfig();
+
+    expect(config.authToken).toBe('1234567890123456');
+  });
+
+  it('应拒绝相对路径的 CLAUDE_PROJECTS_DIR', () => {
+    process.env.AUTH_TOKEN = '1234567890123456';
+    process.env.CLAUDE_PROJECTS_DIR = './relative-projects';
+
+    expect(() => loadConfig()).toThrow(/CLAUDE_PROJECTS_DIR.*absolute/i);
   });
 });

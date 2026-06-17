@@ -23,7 +23,8 @@ const NOISE_TYPES = new Set([
 ]);
 
 export function parseJsonl(content: string): Message[] {
-  const lines = content.split('\n').filter(line => line.trim());
+  // 修复 P2-B6: 兼容 Windows CRLF 换行符
+  const lines = content.split(/\r?\n/).filter(line => line.trim());
   const messages: Message[] = [];
 
   for (const line of lines) {

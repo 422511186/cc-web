@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import type { SessionStore } from "./store.js";
 import type { SSEManager } from "./sse.js";
 import { createAuthMiddleware } from "./auth.js";
+import { createCspMiddleware } from "./csp.js";
 import { createRouter } from "./routes.js";
 import { realSdkClient, type SdkClient } from "./sdk.js";
 import { SessionManager } from "./sessionManager.js";
@@ -22,6 +23,9 @@ export function createApp(
 ): Express {
   const app = express();
   app.use(express.json({ limit: "5mb" }));
+
+  // CSP 安全策略（全局，先于鉴权）
+  app.use(createCspMiddleware());
 
   // 鉴权前置于所有 /api 路由
   app.use("/api", createAuthMiddleware(config.authToken));

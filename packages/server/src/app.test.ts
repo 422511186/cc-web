@@ -39,6 +39,21 @@ function mockStore(): SessionStore {
 }
 
 describe("createApp", () => {
+  it("sets CSP header on all responses", async () => {
+    const cfg = baseConfig();
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+    try {
+      const res = await request(app)
+        .get("/api/projects")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+
+      expect(res.headers['content-security-policy']).toBeDefined();
+      expect(res.headers['content-security-policy']).toContain("default-src 'self'");
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
   it("chat routes require auth", async () => {
     const cfg = baseConfig();
     const app = createApp(cfg, mockStore(), undefined, idleClient);

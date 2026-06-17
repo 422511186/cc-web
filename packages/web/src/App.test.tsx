@@ -1,6 +1,24 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { vi } from 'vitest';
 import App from './App';
+import { createApiClient } from './api';
+
+const mockDisconnect = vi.fn();
+const mockApiClient = {
+  disconnect: mockDisconnect,
+};
+let unauthorizedHandler: (() => void) | undefined;
+
+vi.mock('./api', async () => {
+  const actual = await vi.importActual<typeof import('./api')>('./api');
+  return {
+    ...actual,
+    createApiClient: vi.fn((_token: string, onUnauthorized?: () => void) => {
+      unauthorizedHandler = onUnauthorized;
+      return mockApiClient;
+    }),
+  };
+});
 
 // Mock components to simplify testing
 vi.mock('./components/Login', () => ({
@@ -37,6 +55,7 @@ vi.mock('./chatApi', () => ({
   respond: vi.fn(),
   closeSession: vi.fn(() => Promise.resolve()),
   abortSession: vi.fn(() => Promise.resolve()),
+  probeRun: vi.fn(() => Promise.resolve(true)),
 }));
 
 // 可控的 useSession mock:各测试可改写 sessionState 来驱动状态栏文案
@@ -52,6 +71,8 @@ let sessionState: {
   closedReason: string | null;
 };
 beforeEach(() => {
+  vi.clearAllMocks();
+  unauthorizedHandler = undefined;
   sessionState = {
     messages: [],
     pending: null,
@@ -153,6 +174,10 @@ describe('App responsive layout', () => {
 });
 
 describe('App 退出登录', () => {
+  beforeEach(() => {
+    mockDisconnect.mockReset();
+  });
+
   test('点击退出登录后清除 token 并回到登录页', () => {
     // 有状态的 sessionStorage mock:logout 后 getItem 真返回 null
     const store: Record<string, string> = { authToken: 'test-token' };
@@ -170,6 +195,39 @@ describe('App 退出登录', () => {
     // token 已清除,回到登录页
     expect(store.authToken).toBeUndefined();
     expect(screen.getByTestId('login')).toBeInTheDocument();
+  });
+
+  test('点击退出登录时主动断开浏览 SSE 连接', () => {
+    const store: Record<string, string> = { authToken: 'test-token' };
+    Storage.prototype.getItem = vi.fn((k: string) => store[k] ?? null);
+    Storage.prototype.setItem = vi.fn((k: string, v: string) => { store[k] = v; });
+    Storage.prototype.removeItem = vi.fn((k: string) => { delete store[k]; });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: /退出登录/ }));
+
+    expect(mockDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test('初始鉴权已失效时收到 401 应自动清 token 并回到登录页', async () => {
+    const store: Record<string, string> = { authToken: 'expired-token' };
+    Storage.prototype.getItem = vi.fn((k: string) => store[k] ?? null);
+    Storage.prototype.setItem = vi.fn((k: string, v: string) => { store[k] = v; });
+    Storage.prototype.removeItem = vi.fn((k: string) => { delete store[k]; });
+
+    render(<App />);
+
+    expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+    expect(createApiClient).toHaveBeenCalledWith('expired-token', expect.any(Function));
+
+    act(() => {
+      unauthorizedHandler?.();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('login')).toBeInTheDocument());
+    expect(store.authToken).toBeUndefined();
+    expect(mockDisconnect).toHaveBeenCalledTimes(1);
   });
 
   test('退出登录按钮在侧栏内且有合理样式(非简陋灰按钮)', () => {
@@ -204,28 +262,79 @@ describe('App 切走再切回重连接管', () => {
     (globalThis as unknown as { EventSource: unknown }).EventSource = FakeES as unknown;
   });
 
-  test('在 A 续聊后切到 B 再切回 A,需要重新点"在此继续"(不自动恢复runId)', async () => {
+  test('在 A 忙碌续聊后切到 B 再切回 A,应自动恢复已有 runId 而无需重新点继续', async () => {
     Storage.prototype.getItem = vi.fn(() => 'test-token');
+    const chatApi = await import('./chatApi');
     render(<App />);
 
     // 选中会话 A 并续聊
     fireEvent.click(screen.getByTestId('select-A'));
     const continueBtn = await screen.findByRole('button', { name: '🔗 在此继续' });
+    sessionState.status = 'executing';
     fireEvent.click(continueBtn);
     // 续聊后 runId 落定(=sA),"在此继续"按钮消失
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
     );
+    expect(chatApi.startContinue).toHaveBeenCalledTimes(1);
 
     // 切到 B
     fireEvent.click(screen.getByTestId('select-B'));
     await screen.findByRole('button', { name: '🔗 在此继续' });
 
-    // 切回 A:runId 已清空,需要重新点"在此继续"
+    // 切回 A:应自动恢复已有 runId,不需要重新点继续,也不应再次 startContinue
     fireEvent.click(screen.getByTestId('select-A'));
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
     );
+    expect(chatApi.startContinue).toHaveBeenCalledTimes(1);
+  });
+
+  test('在 A 空闲续聊后切到 B 再切回 A,应自动恢复已有 runId', async () => {
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+    render(<App />);
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    const continueBtn = await screen.findByRole('button', { name: '🔗 在此继续' });
+    fireEvent.click(continueBtn);
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
+    );
+
+    // 默认 idle:切走时会被 release 回收
+    sessionState.status = 'idle';
+
+    fireEvent.click(screen.getByTestId('select-B'));
+    await screen.findByRole('button', { name: '🔗 在此继续' });
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
+    );
+  });
+
+  test('切换会话时不应主动释放当前运行中的后台会话', async () => {
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+    const chatApi = await import('./chatApi');
+    render(<App />);
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    const continueBtn = await screen.findByRole('button', { name: '🔗 在此继续' });
+    sessionState.status = 'executing';
+    fireEvent.click(continueBtn);
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
+    );
+
+    fireEvent.click(screen.getByTestId('select-B'));
+
+    expect(chatApi.closeSession).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
+    );
+    expect(chatApi.startContinue).toHaveBeenCalledTimes(1);
   });
 
   test('续聊起跑那刻锁定 historyBoundary,后续历史增长不覆盖', async () => {
@@ -405,6 +514,23 @@ describe('App 停止执行', () => {
     // 停止后应显示提示信息
     await waitFor(() => expect(screen.getByText(/已停止/)).toBeInTheDocument());
   });
+
+  test('停止后不应掉出连接态，仍保留当前会话输入能力', async () => {
+    const chatApi = await import('./chatApi');
+    vi.mocked(chatApi.abortSession).mockResolvedValue();
+
+    await enterExecutingState();
+
+    fireEvent.click(screen.getByText('⏹ 停止'));
+    fireEvent.click(screen.getByRole('button', { name: /确定/i }));
+
+    sessionState.status = 'idle';
+    sessionState.connected = true;
+
+    await waitFor(() => expect(screen.getByText('已连接')).toBeInTheDocument());
+    expect(screen.getByText('空闲')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '发送' })).toBeInTheDocument();
+  });
 });
 
 describe('App 新建会话两按钮区分', () => {
@@ -443,5 +569,164 @@ describe('App 新建会话两按钮区分', () => {
     // 应该显示 AlertDialog 而非 window.alert
     await waitFor(() => expect(screen.getByText(/新建失败/)).toBeInTheDocument());
     expect(screen.getByText(/目录不存在/)).toBeInTheDocument();
+  });
+});
+
+describe('App activeRuns 持久化', () => {
+  beforeEach(() => {
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      return null;
+    });
+    Storage.prototype.setItem = vi.fn();
+    Storage.prototype.removeItem = vi.fn();
+  });
+
+  test('续聊时将 runId 存入 sessionStorage', async () => {
+    const chatApi = await import('./chatApi');
+    vi.mocked(chatApi.startContinue).mockResolvedValueOnce('run-123');
+
+    render(<App />);
+
+    // 选中会话
+    fireEvent.click(screen.getByTestId('select-A'));
+    await screen.findByRole('button', { name: '🔗 在此继续' });
+
+    // 点击"在此继续"
+    fireEvent.click(screen.getByRole('button', { name: '🔗 在此继续' }));
+
+    // 应该将 activeRuns 存入 sessionStorage
+    await waitFor(() => {
+      expect(Storage.prototype.setItem).toHaveBeenCalledWith(
+        'cc-web-activeRuns',
+        expect.stringContaining('run-123')
+      );
+    });
+  });
+
+  test('页面刷新后自动读取 activeRuns 并重连', async () => {
+    const chatApi = await import('./chatApi');
+    vi.mocked(chatApi.startContinue).mockClear();
+
+    // Mock sessionStorage 有已保存的 activeRuns
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      if (key === 'cc-web-activeRuns') return JSON.stringify({ 'sA': 'run-456' });
+      return null;
+    });
+
+    // Mock URL 有 session 参数
+    window.history.pushState({}, '', '?project=pA&session=sA');
+
+    render(<App />);
+
+    // 应直接恢复已有 runId 进行 SSE 重接,而不是重复 startContinue
+    await screen.findByTestId('conversation');
+    expect(chatApi.startContinue).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument();
+  });
+
+  test('activeRuns 数据损坏时优雅降级不崩溃', async () => {
+    // Mock 损坏的 JSON
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      if (key === 'cc-web-activeRuns') return '{invalid json';
+      return null;
+    });
+
+    window.history.pushState({}, '', '?project=pA&session=sA');
+
+    // 不应抛错，正常渲染
+    expect(() => render(<App />)).not.toThrow();
+
+    // 不应自动重连（因为数据损坏）
+    expect(screen.getByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument();
+  });
+
+  test('恢复到已失效的 active run 时应快速清理并回退到“在此继续”', async () => {
+    const chatApi = await import('./chatApi');
+    vi.mocked(chatApi.probeRun).mockResolvedValueOnce(false);
+
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      if (key === 'cc-web-activeRuns') return JSON.stringify({ sA: 'run-dead' });
+      return null;
+    });
+    Storage.prototype.setItem = vi.fn();
+
+    window.history.pushState({}, '', '?project=pA&session=sA');
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument()
+    );
+
+    expect(chatApi.probeRun).toHaveBeenCalledWith('run-dead');
+    expect(Storage.prototype.setItem).toHaveBeenCalledWith(
+      'cc-web-activeRuns',
+      '{}'
+    );
+  });
+
+  test('旧会话的探活结果延迟返回时，不应污染当前已切换到的新会话', async () => {
+    const chatApi = await import('./chatApi');
+    const probeResolvers: Array<(value: boolean) => void> = [];
+    vi.mocked(chatApi.probeRun).mockImplementation(
+      () => new Promise<boolean>((resolve) => { probeResolvers.push(resolve); })
+    );
+
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      if (key === 'cc-web-activeRuns') return JSON.stringify({ sA: 'run-A' });
+      return null;
+    });
+
+    window.history.pushState({}, '', '?project=pA&session=sA');
+    render(<App />);
+    await waitFor(() => expect(chatApi.probeRun).toHaveBeenCalledWith('run-A'));
+
+    // 用户立刻切到 B，B 没有 active run，应保持“在此继续”
+    fireEvent.click(screen.getByTestId('select-B'));
+    expect(screen.getByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument();
+
+    // 旧的 A 探活晚到返回 true，也不应把 B 误切成已连接态
+    await act(async () => {
+      probeResolvers[0](true);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument();
+    window.history.pushState({}, '', window.location.pathname);
+  });
+
+  test('历史续聊 run 结束后应清理 activeRuns 并重新显示继续按钮', async () => {
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      return null;
+    });
+    Storage.prototype.setItem = vi.fn();
+
+    const { rerender } = render(<App />);
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    const continueBtn = await screen.findByRole('button', { name: '🔗 在此继续' });
+    fireEvent.click(continueBtn);
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '🔗 在此继续' })).not.toBeInTheDocument()
+    );
+
+    sessionState.connected = false;
+    sessionState.closed = true;
+    sessionState.closedReason = 'exited';
+    rerender(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '🔗 在此继续' })).toBeInTheDocument()
+    );
+    expect(Storage.prototype.setItem).toHaveBeenCalledWith(
+      'cc-web-activeRuns',
+      '{}'
+    );
   });
 });

@@ -6,7 +6,7 @@ import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
 import { useSession } from './useSession';
-import { startNew, startContinue, sendMessage, respond, closeSession, abortSession } from './chatApi';
+import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun } from './chatApi';
 import { createApiClient } from './api';
 import type { ApiClient } from './api';
 import type { PromptAnswer, PendingPrompt, Project } from '@cc-web/shared';
@@ -15,6 +15,7 @@ import { QuestionCard } from './components/QuestionCard';
 import { PermissionCard } from './components/PermissionCard';
 import { PlanCard } from './components/PlanCard';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 /** 纯新建会话视图:无历史 session,只展示实时流式消息与待答卡片 */
 function NewSessionView({ liveMessages, pending, onAnswer }: {
@@ -45,12 +46,14 @@ function NewSessionView({ liveMessages, pending, onAnswer }: {
             <div key={`new-${i}`} style={{ marginBottom: '1rem' }}>
               {m.blocks.map((b, bi) => {
                 if (b.kind === 'text') {
+                  const html = marked.parse(b.text, { async: false }) as string;
+                  const sanitizedHtml = DOMPurify.sanitize(html);
                   return (
                     <div
                       key={bi}
                       className="markdown-content"
                       style={{ lineHeight: 1.6 }}
-                      dangerouslySetInnerHTML={{ __html: marked.parse(b.text, { async: false }) as string }}
+                      dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
                     />
                   );
                 }
@@ -98,6 +101,8 @@ function App() {
   // 续聊会话的活跃 runId 记录(sessionId → runId)。切走时只释放 SSE 连接、
   // 后台忙碌会话保活;切回同一会话时据此自动重连接管,无需再点"在此继续"。
   const activeRunsRef = useRef<Map<string, string>>(new Map());
+  const selectedSessionRef = useRef<{ projectId: string; sessionId: string } | null>(null);
+  selectedSessionRef.current = selectedSession;
 
   // 各会话最近一次加载到的历史消息条数(由 Conversation 上报)
   const lastHistoryLenRef = useRef<Map<string, number>>(new Map());
@@ -105,26 +110,114 @@ function App() {
   // 切回时只渲染边界内历史 + 实时流全量重放,避免重复。一旦锁定不被后续增长覆盖。
   const [boundaries, setBoundaries] = useState<Map<string, number>>(new Map());
 
+  const clearAuthState = useCallback((client?: ApiClient | null) => {
+    client?.disconnect();
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('cc-web-activeRuns');
+    activeRunsRef.current.clear();
+    setApiClient(null);
+    setRunId(null);
+    setSelectedSession(null);
+    window.history.pushState({}, '', window.location.pathname);
+  }, []);
+
   const handleHistoryLoaded = useCallback((sessionId: string, length: number) => {
     lastHistoryLenRef.current.set(sessionId, length);
   }, []);
 
+  const persistActiveRuns = useCallback(() => {
+    try {
+      const activeRunsObj: Record<string, string> = {};
+      activeRunsRef.current.forEach((activeRunId, sid) => {
+        activeRunsObj[sid] = activeRunId;
+      });
+      sessionStorage.setItem('cc-web-activeRuns', JSON.stringify(activeRunsObj));
+    } catch {
+      // sessionStorage 失败静默忽略
+    }
+  }, []);
+
+  const rememberActiveRun = useCallback((sessionId: string, activeRunId: string) => {
+    activeRunsRef.current.set(sessionId, activeRunId);
+    persistActiveRuns();
+  }, [persistActiveRuns]);
+
+  const forgetActiveRun = useCallback((sessionId: string) => {
+    if (!activeRunsRef.current.has(sessionId)) return;
+    activeRunsRef.current.delete(sessionId);
+    persistActiveRuns();
+  }, [persistActiveRuns]);
+
+  const restoreActiveRun = useCallback(async (sessionId: string) => {
+    const activeRunId = activeRunsRef.current.get(sessionId);
+    if (!activeRunId) {
+      if (selectedSessionRef.current?.sessionId === sessionId) {
+        setRunId(null);
+      }
+      return;
+    }
+
+    try {
+      const alive = await probeRun(activeRunId);
+      if (selectedSessionRef.current?.sessionId !== sessionId) {
+        return;
+      }
+      if (alive) {
+        setRunId(activeRunId);
+        return;
+      }
+    } catch {
+      if (selectedSessionRef.current?.sessionId !== sessionId) {
+        return;
+      }
+      // 探活失败时不阻塞用户操作，先保守回到未连接态
+    }
+
+    forgetActiveRun(sessionId);
+    if (
+      selectedSessionRef.current?.sessionId === sessionId &&
+      runIdRef.current === activeRunId
+    ) {
+      setRunId(null);
+    }
+  }, [forgetActiveRun]);
+
+  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
+
   // 释放上一个活跃会话(若有):忙碌则后台保活,空闲则回收
   const closePrevious = useCallback(() => {
     const prev = runIdRef.current;
-    if (prev) void closeSession(prev);
-  }, []);
+    if (!prev) return;
+
+    // 历史续聊 run 以 sessionId 作为 runId。若当前已空闲，切走时后端会立即 release 回收，
+    // 前端也应同步清掉 activeRuns，避免稍后切回时错误地尝试重接一个已结束 run。
+    if (
+      selectedSession &&
+      activeRunsRef.current.get(selectedSession.sessionId) === prev &&
+      status === 'idle'
+    ) {
+      forgetActiveRun(selectedSession.sessionId);
+    }
+
+    void closeSession(prev);
+  }, [forgetActiveRun, selectedSession, status]);
 
   // 关闭/刷新页面时尽力关掉活跃会话
   useEffect(() => {
     const onUnload = () => {
-      if (runIdRef.current) void closeSession(runIdRef.current);
+      if (!runIdRef.current) return;
+      if (
+        selectedSession &&
+        activeRunsRef.current.get(selectedSession.sessionId) === runIdRef.current &&
+        status === 'idle'
+      ) {
+        forgetActiveRun(selectedSession.sessionId);
+      }
+      void closeSession(runIdRef.current);
     };
     window.addEventListener('beforeunload', onUnload);
     return () => window.removeEventListener('beforeunload', onUnload);
-  }, []);
-
-  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
+  }, [forgetActiveRun, selectedSession, status]);
 
   // Restore session from URL on mount
   useEffect(() => {
@@ -132,22 +225,47 @@ function App() {
     const projectId = params.get('project');
     const sessionId = params.get('session');
     if (projectId && sessionId) {
-      setSelectedSession({ projectId, sessionId });
+      const nextSelection = { projectId, sessionId };
+      selectedSessionRef.current = nextSelection;
+      setSelectedSession(nextSelection);
+
+      // 尝试从 sessionStorage 恢复 activeRuns 并自动重连
+      try {
+        const stored = sessionStorage.getItem('cc-web-activeRuns');
+        if (stored) {
+          const activeRunsObj = JSON.parse(stored) as Record<string, string>;
+          // 恢复到 ref
+          Object.entries(activeRunsObj).forEach(([sid, rid]) => {
+            activeRunsRef.current.set(sid, rid);
+          });
+          // 如果当前 session 有活跃 runId，直接恢复该 run 的 SSE 接管。
+          // 这里不重复 startContinue：activeRuns 持久化的语义是“恢复现有活跃 run”，
+          // 不是“重新创建一个 continue run”。
+          const activeRunId = activeRunsObj[sessionId];
+          if (activeRunId) {
+            void restoreActiveRun(sessionId);
+          }
+        }
+      } catch {
+        // JSON 解析失败或其他错误，静默忽略，不影响正常渲染
+      }
     }
-  }, []);
+  }, [restoreActiveRun]);
 
   const handleLogin = (token: string) => {
-    const client = createApiClient(token);
+    const client = createApiClient(token, () => clearAuthState(client));
     setApiClient(client);
     // Store token in sessionStorage for reload persistence
     sessionStorage.setItem('authToken', token);
   };
 
   const handleSessionSelect = (projectId: string, sessionId: string) => {
-    closePrevious(); // 切换会话:释放旧会话(忙碌则后台保活待重连)
-    setSelectedSession({ projectId, sessionId });
-    // 切换会话时总是清空 runId，强制用户手动点"在此继续"，避免自动恢复旧连接导致状态混乱
-    setRunId(null);
+    const nextSelection = { projectId, sessionId };
+    selectedSessionRef.current = nextSelection;
+    setSelectedSession(nextSelection);
+    // 若此会话仍有活跃 run（切走时忙碌或空闲保活），先快速探活后恢复接管；
+    // 若 run 已失效，则清理残留映射并回到未连接态等待手动继续。
+    void restoreActiveRun(sessionId);
     setContinueError(null);
     // Update URL with session info
     const params = new URLSearchParams();
@@ -161,7 +279,8 @@ function App() {
     setContinueError(null);
     try {
       const id = await startContinue(sessionId, projectId);
-      activeRunsRef.current.set(sessionId, id); // 记录活跃 runId,供切回重连
+      rememberActiveRun(sessionId, id); // 记录活跃 runId,供切回/刷新重连
+
       // 锁定历史边界为起跑那刻已加载的历史长度;本轮输出由实时流负责,避免切回重复
       const len = lastHistoryLenRef.current.get(sessionId) ?? 0;
       setBoundaries((prev) => {
@@ -174,7 +293,7 @@ function App() {
       // 原项目目录已删除等情况:续聊不可用,提示用户(历史浏览不受影响)
       setContinueError(e instanceof Error ? e.message : '续聊失败');
     }
-  }, [closePrevious]);
+  }, [closePrevious, rememberActiveRun]);
 
   const handleNew = useCallback(async () => {
     closePrevious(); // 新建前关掉旧的活跃会话
@@ -241,18 +360,27 @@ function App() {
 
   const handleLogout = useCallback(() => {
     closePrevious(); // 登出前关掉活跃会话
-    sessionStorage.removeItem('authToken');
-    setApiClient(null);
-    setRunId(null);
-    setSelectedSession(null);
-    window.history.pushState({}, '', window.location.pathname);
-  }, [closePrevious]);
+    clearAuthState(apiClient);
+  }, [apiClient, clearAuthState, closePrevious]);
+
+  useEffect(() => {
+    if (
+      closed &&
+      runId &&
+      selectedSession &&
+      activeRunsRef.current.get(selectedSession.sessionId) === runId
+    ) {
+      forgetActiveRun(selectedSession.sessionId);
+      setRunId(null);
+    }
+  }, [closed, forgetActiveRun, runId, selectedSession]);
 
   // Try to restore session from sessionStorage
   if (!apiClient) {
     const storedToken = sessionStorage.getItem('authToken');
     if (storedToken) {
-      setApiClient(createApiClient(storedToken));
+      const client = createApiClient(storedToken, () => clearAuthState(client));
+      setApiClient(client);
     } else {
       return <Login onLogin={handleLogin} />;
     }

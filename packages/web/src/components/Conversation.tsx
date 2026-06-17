@@ -7,6 +7,13 @@ import { PermissionCard } from './PermissionCard';
 import { PlanCard } from './PlanCard';
 import { DiffView, type DiffSegment } from './DiffView';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import {
+  List,
+  useDynamicRowHeight,
+  useListRef,
+  type RowComponentProps,
+} from 'react-window';
 import '../markdown.css';
 
 interface ConversationProps {
@@ -26,6 +33,18 @@ interface ConversationProps {
   /** 当前待答事项(权限/答题/计划) */
   pending?: PendingPrompt | null;
   /** 用户对待答事项的回答回调 */
+  onAnswer?: (a: PromptAnswer) => void;
+}
+
+type ConversationRow =
+  | { kind: 'history'; message: Message; messageIndex: number }
+  | { kind: 'live'; liveMessage: LiveMessage; liveIndex: number }
+  | { kind: 'pending'; prompt: PendingPrompt };
+
+interface ConversationRowProps {
+  rows: ConversationRow[];
+  apiClient: ApiClient;
+  onImageClick: (src: string) => void;
   onAnswer?: (a: PromptAnswer) => void;
 }
 
@@ -159,10 +178,11 @@ function MessageContent({ content, role, metadata, apiClient, onImageClick }: {
   // For assistant messages, render as markdown
   if (role === 'assistant') {
     const html = marked.parse(content, { async: false }) as string;
+    const sanitizedHtml = DOMPurify.sanitize(html);
     return (
       <>
         <div
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
           style={{
             lineHeight: '1.6',
           }}
@@ -226,12 +246,22 @@ function MessageContent({ content, role, metadata, apiClient, onImageClick }: {
               }}
               onClick={() => {
                 if (doc.source) {
-                  // Open document in new window
-                  const win = window.open();
-                  if (win) {
-                    const blob = new Blob([atob(doc.source.data)], { type: doc.source.media_type });
+                  try {
+                    // Open document in new window
+                    const win = window.open();
+                    if (!win) return;
+                    const binary = atob(doc.source.data);
+                    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+                    const blob = new Blob([bytes], { type: doc.source.media_type });
                     const url = URL.createObjectURL(blob);
+                    if (typeof win.addEventListener === 'function') {
+                      win.addEventListener('load', () => {
+                        URL.revokeObjectURL(url);
+                      }, { once: true });
+                    }
                     win.location.href = url;
+                  } catch {
+                    // 文档数据损坏/浏览器拒绝打开时静默忽略，避免点击附件导致整个界面报错
                   }
                 }
               }}
@@ -356,13 +386,213 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
+function LiveMessageCard({ message }: { message: LiveMessage }) {
+  const hasContent = message.blocks.length > 0 || message.streaming;
+  if (!hasContent) return null;
+
+  if (message.role === 'user') {
+    const text = message.blocks
+      .map((b) => (b.kind === 'text' ? b.text : ''))
+      .join('');
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <div
+          className="message-card user-message"
+          style={{
+            maxWidth: '65%',
+            padding: '0.875rem 1.125rem',
+            borderRadius: '12px',
+            backgroundColor: 'rgb(242, 242, 242)',
+            color: '#2c2c2c',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {text}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="message-card assistant-message"
+      style={{ width: '100%', maxWidth: '900px', margin: '0 auto', padding: '0.5rem 0' }}
+    >
+      {message.blocks.map((b, bi) => {
+        if (b.kind === 'text') {
+          const html = marked.parse(b.text, { async: false }) as string;
+          const sanitizedHtml = DOMPurify.sanitize(html);
+          return (
+            <div
+              key={bi}
+              className="markdown-content"
+              style={{ lineHeight: '1.6' }}
+              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+            />
+          );
+        }
+        if (b.kind === 'thinking') {
+          return <LiveCollapsible key={bi} summary="💭 思考" body={b.text} />;
+        }
+        if (b.kind === 'tool_use') {
+          const diffProps = toDiffProps(b.name, b.input);
+          if (diffProps) {
+            return (
+              <div key={bi} style={{ marginBottom: '0.5rem' }}>
+                <div style={{ fontSize: '0.875rem', color: '#555', marginBottom: '0.35rem' }}>
+                  🔧 {b.name}
+                </div>
+                <DiffView filePath={diffProps.filePath} segments={diffProps.segments} />
+              </div>
+            );
+          }
+          return (
+            <LiveCollapsible
+              key={bi}
+              summary={`🔧 ${b.name}: ${summarizeInput(b.input)}`}
+              body={JSON.stringify(b.input, null, 2)}
+            />
+          );
+        }
+        return (
+          <LiveCollapsible
+            key={bi}
+            summary={b.isError ? '工具结果 ✗' : '工具结果 ✓'}
+            body={b.text}
+          />
+        );
+      })}
+      {message.streaming && (
+        <div className="msg-streaming" style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
+          {message.streaming}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingPromptRow({
+  prompt,
+  onAnswer,
+}: {
+  prompt: PendingPrompt;
+  onAnswer?: (a: PromptAnswer) => void;
+}) {
+  if (!onAnswer) return null;
+  return (
+    <div className="pending-card" style={{ maxWidth: '900px', margin: '0 auto' }}>
+      {prompt.kind === 'question' && <QuestionCard prompt={prompt} onAnswer={onAnswer} />}
+      {prompt.kind === 'permission' && <PermissionCard prompt={prompt} onAnswer={onAnswer} />}
+      {prompt.kind === 'plan' && <PlanCard prompt={prompt} onAnswer={onAnswer} />}
+    </div>
+  );
+}
+
+function ConversationListRow({
+  index,
+  style,
+  rows,
+  apiClient,
+  onImageClick,
+  onAnswer,
+}: RowComponentProps<ConversationRowProps>) {
+  const row = rows[index];
+
+  if (row.kind === 'history') {
+    const message = row.message;
+    const isUser = message.role === 'user' && (!message.type || message.type === 'text');
+    const isCollapsible = message.type && ['thinking', 'tool_use', 'tool_result', 'system_message'].includes(message.type);
+
+    return (
+      <div style={style}>
+        <div
+          data-testid="history-message-row"
+          id={`message-${row.messageIndex}`}
+          style={{
+            maxWidth: '1200px',
+            margin: '0 auto',
+            marginBottom: '1rem',
+            display: 'flex',
+            justifyContent: isUser ? 'flex-end' : 'center',
+          }}
+        >
+          {isCollapsible ? (
+            <div style={{ width: '100%', maxWidth: '900px' }}>
+              <CollapsibleMessage message={message} />
+            </div>
+          ) : (
+            <div
+              className={`message-card ${isUser ? 'user-message' : 'assistant-message'}`}
+              style={{
+                width: isUser ? 'auto' : '100%',
+                maxWidth: isUser ? '65%' : '900px',
+                padding: '0.875rem 1.125rem',
+                borderRadius: '12px',
+                backgroundColor: isUser ? 'rgb(242, 242, 242)' : 'transparent',
+                color: '#2c2c2c',
+                boxShadow: isUser ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                position: 'relative',
+              }}
+            >
+              <div style={{ color: '#333', lineHeight: '1.5' }}>
+                <MessageContent
+                  content={message.content}
+                  role={message.role}
+                  metadata={message.metadata}
+                  apiClient={apiClient}
+                  onImageClick={(src) => onImageClick(src)}
+                />
+              </div>
+              <div
+                style={{
+                  fontSize: '0.6875rem',
+                  color: '#999',
+                  marginTop: '0.5rem',
+                  textAlign: isUser ? 'right' : 'left',
+                }}
+              >
+                {new Date(message.timestamp).toLocaleString('zh-CN', {
+                  month: '2-digit',
+                  day: '2-digit',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (row.kind === 'live') {
+    return (
+      <div style={style}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto 1rem' }}>
+          <LiveMessageCard message={row.liveMessage} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={style}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        <PendingPromptRow prompt={row.prompt} onAnswer={onAnswer} />
+      </div>
+    </div>
+  );
+}
+
 export function Conversation({ apiClient, projectId, sessionId, projectName, projectPath, liveMessages, historyBoundary, onHistoryLoaded, pending, onAnswer }: ConversationProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentUserMessageIndex, setCurrentUserMessageIndex] = useState<number>(0);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const messageRefs = useState<(HTMLDivElement | null)[]>([])[0];
+  const listRef = useListRef();
+  const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 140, key: sessionId });
 
   // 续聊是否活跃:活跃时 assistant 输出由实时流(liveMessages)负责渲染,
   // 文件变更不再重新合并 session.messages,避免同一条回复渲染两遍。
@@ -376,6 +606,20 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
     liveActive && historyBoundary !== undefined && session
       ? session.messages.slice(0, historyBoundary)
       : session?.messages ?? [];
+
+  const rows: ConversationRow[] = [
+    ...historyMessages.map((message, index) => ({
+      kind: 'history' as const,
+      message,
+      messageIndex: index,
+    })),
+    ...(liveMessages ?? []).map((liveMessage, index) => ({
+      kind: 'live' as const,
+      liveMessage,
+      liveIndex: index,
+    })),
+    ...(pending ? [{ kind: 'pending' as const, prompt: pending }] : []),
+  ];
 
   // 优先使用传入的真实项目名,避免有损解码导致 cc-web-develop → develop
   const displayName = projectName || projectId.split('-').filter(Boolean).pop() || projectId;
@@ -405,7 +649,6 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
       if (update.projectId === projectId && update.sessionId === sessionId) {
         // 续聊活跃:实时流为准,跳过文件变更触发的历史重新合并(否则与实时流重复)
         if (liveActiveRef.current) return;
-        console.log('Session updated, fetching new messages...');
         try {
           const response = await apiClient.getSession(projectId, sessionId);
 
@@ -417,7 +660,6 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
 
             // Check if there are new messages
             if (response.session.messages.length > prevSession.messages.length) {
-              console.log(`Appending ${response.session.messages.length - prevSession.messages.length} new messages`);
               // Return the new session with all messages (including new ones)
               return response.session;
             } else if (response.session.messages.length === prevSession.messages.length) {
@@ -426,7 +668,6 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
               const lastNewMsg = response.session.messages[response.session.messages.length - 1];
 
               if (lastOldMsg && lastNewMsg && lastOldMsg.content !== lastNewMsg.content) {
-                console.log('Last message updated (streaming)');
                 return response.session;
               }
             }
@@ -455,26 +696,26 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
       if (userMessageIndices.length > 0) {
         const lastIndex = userMessageIndices.length - 1;
         setCurrentUserMessageIndex(lastIndex);
-        // Scroll to bottom (last message) after a brief delay to ensure DOM is ready
+        // 滚到最后一条历史消息
         setTimeout(() => {
-          scrollToMessage(session.messages.length - 1);
+          scrollToMessage(historyMessages.length - 1);
         }, 100);
       }
     }
-  }, [session]);
+  }, [session, historyMessages.length]);
 
   // 实时流式消息更新时自动滚动到底部
   useEffect(() => {
-    if (liveMessages && liveMessages.length > 0) {
-      // 滚动到容器最底部(实时消息渲染在历史消息之后)
-      const container = document.querySelector('.conversation-messages');
-      if (container) {
-        setTimeout(() => {
-          container.scrollTop = container.scrollHeight;
-        }, 50);
-      }
+    if (liveMessages && liveMessages.length > 0 && rows.length > 0) {
+      setTimeout(() => {
+        listRef.current?.scrollToRow({
+          index: rows.length - 1,
+          align: 'end',
+          behavior: 'auto',
+        });
+      }, 50);
     }
-  }, [liveMessages]);
+  }, [liveMessages, listRef, rows.length]);
 
   const getUserMessageIndices = () => {
     if (!session) return [];
@@ -485,10 +726,11 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
   };
 
   const scrollToMessage = (messageIndex: number) => {
-    const messageElement = messageRefs[messageIndex];
-    if (messageElement) {
-      messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    listRef.current?.scrollToRow({
+      index: messageIndex,
+      align: 'center',
+      behavior: 'smooth',
+    });
   };
 
   const goToTop = () => {
@@ -556,9 +798,6 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
       </div>
     );
   }
-
-  const isCollapsible = (msg: Message) =>
-    msg.type && ['thinking', 'tool_use', 'tool_result', 'system_message'].includes(msg.type);
 
   const userMessageIndices = getUserMessageIndices();
   const userMessageCount = userMessageIndices.length;
@@ -684,7 +923,6 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
             <button
               key={userIdx}
               onClick={() => {
-                console.log(`Clicking dot ${userIdx}, message index: ${msgIdx}, role: ${message.role}, content: ${message.content.substring(0, 50)}`);
                 setCurrentUserMessageIndex(userIdx);
                 scrollToMessage(msgIdx);
               }}
@@ -812,170 +1050,29 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
 
       <div className="conversation-messages" style={{
         flex: 1,
-        overflow: 'auto',
-        padding: '1.5rem 0',
-        paddingLeft: '4rem',
-        paddingRight: '6rem',
         backgroundColor: 'transparent',
       }}>
-        {historyMessages.map((message, index) => {
-          const isUser = message.role === 'user' && (!message.type || message.type === 'text');
-
-          return (
-            <div
-              key={index}
-              ref={(el) => { messageRefs[index] = el; }}
-              id={`message-${index}`}
-              style={{
-                maxWidth: '1200px',
-                margin: '0 auto',
-                marginBottom: '1rem',
-                display: 'flex',
-                justifyContent: isUser ? 'flex-end' : 'center',
-              }}
-            >
-              {isCollapsible(message) ? (
-                <div style={{ width: '100%', maxWidth: '900px' }}>
-                  <CollapsibleMessage message={message} />
-                </div>
-              ) : (
-                <div
-                  className={`message-card ${isUser ? 'user-message' : 'assistant-message'}`}
-                  style={{
-                    width: isUser ? 'auto' : '100%',
-                    maxWidth: isUser ? '65%' : '900px',
-                    padding: '0.875rem 1.125rem',
-                    borderRadius: '12px',
-                    backgroundColor: isUser ? 'rgb(242, 242, 242)' : 'transparent',
-                    color: '#2c2c2c',
-                    boxShadow: isUser ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                    position: 'relative',
-                  }}
-                >
-                  <div style={{ color: '#333', lineHeight: '1.5' }}>
-                    <MessageContent content={message.content} role={message.role} metadata={message.metadata} apiClient={apiClient} onImageClick={setLightboxSrc} />
-                  </div>
-                  <div style={{
-                    fontSize: '0.6875rem',
-                    color: '#999',
-                    marginTop: '0.5rem',
-                    textAlign: isUser ? 'right' : 'left',
-                  }}>
-                    {new Date(message.timestamp).toLocaleString('zh-CN', {
-                      month: '2-digit',
-                      day: '2-digit',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* ── 实时续聊:流式消息 ── */}
-        {liveMessages && liveMessages.length > 0 && (
-          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-            {liveMessages.map((m, i) => {
-              const hasContent = m.blocks.length > 0 || m.streaming;
-              if (!hasContent) return null;
-              // 实时流里的用户消息(乐观插入):右对齐气泡,与历史用户消息一致
-              if (m.role === 'user') {
-                const text = m.blocks
-                  .map((b) => (b.kind === 'text' ? b.text : ''))
-                  .join('');
-                return (
-                  <div
-                    key={`live-${i}`}
-                    style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 auto 1rem' }}
-                  >
-                    <div
-                      className="message-card user-message"
-                      style={{
-                        maxWidth: '65%',
-                        padding: '0.875rem 1.125rem',
-                        borderRadius: '12px',
-                        backgroundColor: 'rgb(242, 242, 242)',
-                        color: '#2c2c2c',
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
-                        whiteSpace: 'pre-wrap',
-                      }}
-                    >
-                      {text}
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <div
-                  key={`live-${i}`}
-                  className="message-card assistant-message"
-                  style={{ width: '100%', maxWidth: '900px', margin: '0 auto 1rem', padding: '0.5rem 0' }}
-                >
-                  {m.blocks.map((b, bi) => {
-                    if (b.kind === 'text') {
-                      const html = marked.parse(b.text, { async: false }) as string;
-                      return (
-                        <div
-                          key={bi}
-                          className="markdown-content"
-                          style={{ lineHeight: '1.6' }}
-                          dangerouslySetInnerHTML={{ __html: html }}
-                        />
-                      );
-                    }
-                    if (b.kind === 'thinking') {
-                      return <LiveCollapsible key={bi} summary="💭 思考" body={b.text} />;
-                    }
-                    if (b.kind === 'tool_use') {
-                      const diffProps = toDiffProps(b.name, b.input);
-                      if (diffProps) {
-                        return (
-                          <div key={bi} style={{ marginBottom: '0.5rem' }}>
-                            <div style={{ fontSize: '0.875rem', color: '#555', marginBottom: '0.35rem' }}>
-                              🔧 {b.name}
-                            </div>
-                            <DiffView filePath={diffProps.filePath} segments={diffProps.segments} />
-                          </div>
-                        );
-                      }
-                      return (
-                        <LiveCollapsible
-                          key={bi}
-                          summary={`🔧 ${b.name}: ${summarizeInput(b.input)}`}
-                          body={JSON.stringify(b.input, null, 2)}
-                        />
-                      );
-                    }
-                    // tool_result
-                    return (
-                      <LiveCollapsible
-                        key={bi}
-                        summary={b.isError ? '工具结果 ✗' : '工具结果 ✓'}
-                        body={b.text}
-                      />
-                    );
-                  })}
-                  {m.streaming && (
-                    <div className="msg-streaming" style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
-                      {m.streaming}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* ── 待答事项卡片 ── */}
-        {pending && onAnswer && (
-          <div className="pending-card" style={{ maxWidth: '900px', margin: '0 auto' }}>
-            {pending.kind === 'question' && <QuestionCard prompt={pending} onAnswer={onAnswer} />}
-            {pending.kind === 'permission' && <PermissionCard prompt={pending} onAnswer={onAnswer} />}
-            {pending.kind === 'plan' && <PlanCard prompt={pending} onAnswer={onAnswer} />}
-          </div>
-        )}
+        <List
+          listRef={listRef}
+          rowCount={rows.length}
+          rowHeight={dynamicRowHeight}
+          overscanCount={8}
+          rowComponent={ConversationListRow}
+          rowProps={{
+            rows,
+            apiClient,
+            onImageClick: setLightboxSrc,
+            onAnswer,
+          }}
+          className="conversation-messages"
+          style={{
+            height: '100%',
+            padding: '1.5rem 0',
+            paddingLeft: '4rem',
+            paddingRight: '6rem',
+            overflow: 'auto',
+          }}
+        />
       </div>
       {lightboxSrc && (
         <div

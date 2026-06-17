@@ -3,6 +3,12 @@ import { vi, beforeEach, afterEach } from 'vitest';
 import { Conversation } from './Conversation';
 import type { ApiClient } from '../api';
 
+class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 function makeSession(messages: unknown[]) {
   return {
     session: {
@@ -31,6 +37,8 @@ function makeApiClient(getSession: ReturnType<typeof vi.fn>): ApiClient {
 
 beforeEach(() => {
   sseCallback = null;
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
+    ResizeObserverMock as unknown;
 });
 
 afterEach(() => {
@@ -227,5 +235,184 @@ describe('Conversation 编辑工具显示行级 diff', () => {
     expect(screen.getByText('- baz')).toHaveClass('diff-del');
     expect(screen.getByText('+ qux')).toHaveClass('diff-add');
     expect(screen.getByText('/proj/b.ts')).toBeInTheDocument();
+  });
+});
+
+describe('Conversation 长列表虚拟滚动', () => {
+  test('超长历史消息列表只渲染可视窗口附近的消息,而非一次性渲染全部 200 条', async () => {
+    const messages = Array.from({ length: 200 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `消息 ${i + 1}`,
+      timestamp: Date.now() + i,
+    }));
+    const getSession = vi.fn().mockResolvedValue(makeSession(messages));
+    const apiClient = makeApiClient(getSession);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+      />
+    );
+
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+    // 头尾消息仍可通过数据源存在，但 DOM 中不应一次性出现 200 条 message 容器
+    const renderedMessageNodes = document.querySelectorAll('[data-testid="history-message-row"]');
+    expect(renderedMessageNodes.length).toBeLessThan(80);
+    expect(screen.getByText('消息 1')).toBeInTheDocument();
+    expect(screen.queryByText('消息 200')).toBeNull();
+  });
+});
+
+describe('Conversation 文档附件打开容错', () => {
+  test('文档 base64 损坏时点击附件不应抛错', async () => {
+    const getSession = vi.fn().mockResolvedValue(
+      makeSession([
+        {
+          role: 'user',
+          content: '请看附件',
+          timestamp: Date.now(),
+          metadata: {
+            documents: [
+              {
+                source: {
+                  media_type: 'text/plain',
+                  data: '%%%not-base64%%%',
+                },
+              },
+            ],
+          },
+        },
+      ])
+    );
+    const apiClient = makeApiClient(getSession);
+    const openMock = vi.fn(() => ({ location: { href: '' } }));
+    vi.stubGlobal('open', openMock);
+    vi.stubGlobal('atob', vi.fn(() => {
+      throw new Error('invalid base64');
+    }));
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+      />
+    );
+
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+    const docButton = await screen.findByText(/Document 1/i);
+    expect(() => fireEvent.click(docButton)).not.toThrow();
+  });
+
+  test('文档 base64 解码后应按原始字节构造 Blob,避免非 ASCII 内容损坏', async () => {
+    const getSession = vi.fn().mockResolvedValue(
+      makeSession([
+        {
+          role: 'user',
+          content: '二进制附件',
+          timestamp: Date.now(),
+          metadata: {
+            documents: [
+              {
+                source: {
+                  media_type: 'application/octet-stream',
+                  data: 'ignored-base64',
+                },
+              },
+            ],
+          },
+        },
+      ])
+    );
+    const apiClient = makeApiClient(getSession);
+    const openMock = vi.fn(() => ({ location: { href: '' } }));
+    const blobMock = vi.fn(() => ({}));
+    vi.stubGlobal('open', openMock);
+    vi.stubGlobal('atob', vi.fn(() => '\u0000\u00ffA'));
+    vi.stubGlobal('Blob', blobMock as unknown as typeof Blob);
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:mock'),
+    } as unknown as typeof URL);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+      />
+    );
+
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+    const docButton = await screen.findByText(/Document 1/i);
+    fireEvent.click(docButton);
+
+    expect(blobMock).toHaveBeenCalledTimes(1);
+    const [parts, options] = blobMock.mock.calls[0];
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toBeInstanceOf(Uint8Array);
+    expect(Array.from(parts[0] as Uint8Array)).toEqual([0, 255, 65]);
+    expect(options).toEqual({ type: 'application/octet-stream' });
+  });
+
+  test('文档窗口加载后应释放 Blob URL,避免点击附件累积泄漏', async () => {
+    const getSession = vi.fn().mockResolvedValue(
+      makeSession([
+        {
+          role: 'user',
+          content: '打开附件',
+          timestamp: Date.now(),
+          metadata: {
+            documents: [
+              {
+                source: {
+                  media_type: 'application/pdf',
+                  data: 'ignored-base64',
+                },
+              },
+            ],
+          },
+        },
+      ])
+    );
+    const apiClient = makeApiClient(getSession);
+    let onLoad: (() => void) | undefined;
+    const fakeWindow = {
+      location: { href: '' },
+      addEventListener: vi.fn((event: string, cb: () => void) => {
+        if (event === 'load') onLoad = cb;
+      }),
+    };
+    vi.stubGlobal('open', vi.fn(() => fakeWindow));
+    vi.stubGlobal('atob', vi.fn(() => 'PDF'));
+    vi.stubGlobal('Blob', vi.fn(() => ({})) as unknown as typeof Blob);
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:doc-preview'),
+      revokeObjectURL,
+    } as unknown as typeof URL);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+      />
+    );
+
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByText(/Document 1/i));
+
+    expect(fakeWindow.addEventListener).toHaveBeenCalledWith('load', expect.any(Function), { once: true });
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    onLoad?.();
+
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:doc-preview');
   });
 });

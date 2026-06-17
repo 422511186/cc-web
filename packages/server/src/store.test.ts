@@ -65,6 +65,32 @@ describe('SessionStore', () => {
         path: 'C:/Users/huang/Desktop',
       });
     });
+
+    it('无 cwd 且目录名不是编码路径时,不应错误解码后把项目隐藏掉', async () => {
+      vi.mocked(fs.readdir).mockImplementation(async (p: any) => {
+        if (p.includes('demo-project')) {
+          return [] as any;
+        }
+        return ['demo-project'] as any;
+      });
+
+      vi.mocked(fs.stat).mockResolvedValue({
+        isDirectory: () => true,
+      } as any);
+
+      // 即使外部 dirExists 对“解码后的 demo/project”返回 false，
+      // 纯目录名项目也应保留，因为它本来就不是编码路径。
+      const fallbackStore = new SessionStore(mockProjectsDir, () => false);
+
+      const projects = await fallbackStore.listProjects();
+
+      expect(projects).toHaveLength(1);
+      expect(projects[0]).toMatchObject({
+        id: 'demo-project',
+        name: 'demo-project',
+        path: 'demo-project',
+      });
+    });
   });
 
   describe('listProjects', () => {
@@ -322,6 +348,38 @@ describe('SessionStore', () => {
 
       expect(sessions).toHaveLength(1);
       expect(sessions[0].id).toBe('alive');
+    });
+  });
+
+  describe('P2-B5: 路径穿越检测强化（Windows 绝对路径误判）', () => {
+    it('should reject Windows absolute path in sessionId (C:\\malicious\\path)', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('C--Users-huang-Desktop', 'C:\\malicious\\path')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it('should reject UNC path in sessionId (\\\\server\\share)', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('C--Users-huang-Desktop', '\\\\server\\share')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it('should reject path that escapes root via parent traversal (..\\..\\etc\\passwd)', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('C--Users-huang-Desktop', '..\\..\\..\\..\\..\\etc\\passwd')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
     });
   });
 });
