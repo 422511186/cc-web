@@ -29,6 +29,16 @@ const HUB_GRACE_MS = 60_000;
 const MAX_LOG_EVENTS = 10_000;
 const MAX_DEBUG_LOGS = 500;
 
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value);
+}
+
+function isSafeAbsoluteCwd(value: string): boolean {
+  if (!value || value.includes("\0")) return false;
+  if (value.includes("..")) return false;
+  return path.isAbsolute(value) || isWindowsAbsolutePath(value);
+}
+
 /** 把 (projectId, sessionId) 解析成 session 的真实工作目录,供 SDK resume 用 */
 export type CwdResolver = (
   projectId: string | undefined,
@@ -152,8 +162,8 @@ export function createChatRouter(
 
       // 如果提供了 cwd，需要校验
       if (cwd) {
-        // 防穿越：检查相对路径和危险路径模式
-        if (cwd.includes("..") || !path.isAbsolute(cwd)) {
+        // 同时接受宿主 OS 绝对路径和 Windows 绝对路径，避免 CI/Linux runner 误判。
+        if (!isSafeAbsoluteCwd(cwd)) {
           res.status(400).json({ error: "非法路径" });
           return;
         }

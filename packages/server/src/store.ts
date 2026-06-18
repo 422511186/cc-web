@@ -190,14 +190,13 @@ export class SessionStore {
    *  必须防目录穿越:解析后确认目标文件仍落在 projectsDir 内,否则抛错拒绝。
    *  返回 true 表示已软删;文件本就不存在(ENOENT)返回 false。 */
   async deleteSession(projectId: string, sessionId: string): Promise<boolean> {
+    if (this.isUnsafePathToken(projectId) || this.isUnsafePathToken(sessionId)) {
+      throw new Error('Invalid session path: path traversal detected');
+    }
+
     const root = path.resolve(this.projectsDir);
     const target = path.resolve(this.projectsDir, projectId, `${sessionId}.jsonl`);
-
-    // 修复 P2-B5: 更严格的路径穿越检测（防止 Windows 绝对路径误判）
-    // 使用 startsWith 检查而非 path.relative，后者在 Windows 下对绝对路径处理不可靠
-    const normalizedRoot = root + path.sep;
-    const normalizedTarget = target + path.sep;
-    if (!normalizedTarget.startsWith(normalizedRoot)) {
+    if (!target.startsWith(root + path.sep)) {
       throw new Error('Invalid session path: path traversal detected');
     }
 
@@ -243,5 +242,15 @@ export class SessionStore {
 
   private isEncodedWindowsProjectPath(encoded: string): boolean {
     return /^[A-Z]--/.test(encoded);
+  }
+
+  /** 判断用户输入的路径片段是否安全:禁止分隔符、绝对路径与父级穿越。 */
+  private isUnsafePathToken(value: string): boolean {
+    if (!value || value === '.' || value === '..') return true;
+    if (value.includes('\0')) return true;
+    if (value.includes('/') || value.includes('\\')) return true;
+    if (/^[A-Za-z]:/.test(value)) return true;
+    if (/^\\\\/.test(value)) return true;
+    return false;
   }
 }

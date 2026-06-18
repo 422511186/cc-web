@@ -11,10 +11,14 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
     "dev:server": "npm run dev --workspace @cc-web/server",
     "dev:web": "npm run dev --workspace @cc-web/web"
   },
   "dependencies": {
     "marked": "^18.0.5"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9"
   }
 }

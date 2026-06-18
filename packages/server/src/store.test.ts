@@ -352,6 +352,16 @@ describe('SessionStore', () => {
   });
 
   describe('P2-B5: 路径穿越检测强化（Windows 绝对路径误判）', () => {
+    it('should reject nested relative path in sessionId (nested/report.txt)', async () => {
+      vi.mocked(fs.rename).mockResolvedValue(undefined as any);
+
+      await expect(
+        store.deleteSession('C--Users-huang-Desktop', 'nested/report.txt')
+      ).rejects.toThrow(/traversal|invalid/i);
+
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
     it('should reject Windows absolute path in sessionId (C:\\malicious\\path)', async () => {
       vi.mocked(fs.rename).mockResolvedValue(undefined as any);
 

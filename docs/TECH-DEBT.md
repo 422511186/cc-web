@@ -2,7 +2,7 @@
 
 > 本文档记录 cc-web 项目经深度代码审查后发现的已知问题、技术债务和改进方向。
 > 
-> 最后更新：2026-06-17（夜）
+> 最后更新：2026-06-18
 > 
 > 来源：基于完整代码审查（后端 10 个核心模块 + 前端 10 个核心模块）
 
@@ -248,9 +248,9 @@ useEffect(() => {
 
 **问题**: ~~Windows 下 `path.isAbsolute(rel)` 可能误判~~
 
-**修复状态**: ✅ 已修复（2026-06-16）
+**修复状态**: ✅ 已修复（2026-06-18，补齐跨平台语义）
 
-**方案**: 改用 `target.startsWith(root + path.sep)` 更严格的检测，直接比对规范化后的绝对路径前缀，避免 `path.relative` 在 Windows 下对绝对路径处理不可靠的问题。新增测试覆盖 Windows 绝对路径（`C:\malicious\path`）、UNC 路径（`\\server\share`）、多级父目录穿越（`..\..\etc\passwd`）。
+**方案**: 在 `deleteSession()` 入口先拒绝任何带分隔符、盘符、UNC 前缀的 `projectId/sessionId` 片段，再做 `target.startsWith(root + path.sep)` 兜底检查。这样即使 CI 运行在 Linux，也不会把 `nested/report.txt`、`C:\malicious\path`、`\\server\share` 误当成普通文件名接受。
 
 ---
 
@@ -412,7 +412,7 @@ useEffect(() => {
 
 1. **store.ts:61-93** - `getProjectRealPath` 与 `getSessionCwd` 逻辑重复，应抽取共享函数
 2. **Conversation.tsx** - 用户消息气泡样式重复两次（历史+实时），应提取组件
-3. **chatRoutes.ts:86-98** - 新建/续聊的 cwd 校验逻辑不对称，应统一为 `validateAndResolveCwd`
+3. ~~**chatRoutes.ts:86-98** - 新建/续聊的 cwd 校验逻辑不对称，应统一为 `validateAndResolveCwd`~~ ✅ 已部分收敛（2026-06-18：新建会话已抽成跨平台 `isSafeAbsoluteCwd()`，同时接受宿主绝对路径与 Windows 绝对路径）
 4. **App.tsx:266-520** - 过多内联样式，难以维护，应提取到 CSS 文件
 
 ### 类型安全

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import path from "node:path";
 import { createChatRouter } from "./chatRoutes.js";
 import { SessionManager } from "./sessionManager.js";
 import type { SdkClient } from "./sdk.js";
@@ -29,6 +30,16 @@ const echoClient: SdkClient = {
         session_id: "s1",
         uuid: "r1",
       } as unknown as SDKMessage;
+      break;
+    }
+  },
+};
+
+/** long-running fake SDK:保持会话活跃，便于断言 active agents */
+const pendingClient: SdkClient = {
+  start: async function* (params) {
+    for await (const _msg of params.prompt) {
+      await new Promise(() => undefined);
       break;
     }
   },
@@ -168,9 +179,9 @@ describe("chat routes", () => {
 
     expect(res.status).toBe(200);
     expect(received[0]).toContain("请看附件");
-    expect(received[0]).toContain("C:\\uploads\\abc.png");
-    expect(received[0]).toContain("C:\\uploads\\escape.pdf");
-    expect(received[0]).toContain("C:\\uploads\\report.txt");
+    expect(received[0]).toContain(path.normalize("C:/uploads/abc.png"));
+    expect(received[0]).toContain(path.normalize("C:/uploads/escape.pdf"));
+    expect(received[0]).toContain(path.normalize("C:/uploads/report.txt"));
     expect(received[0]).not.toContain("..");
   });
 
@@ -211,7 +222,7 @@ describe("chat routes", () => {
 
   it("GET /sessions/active returns active agents and maxConcurrent", async () => {
     const mgr = new SessionManager({
-      client: echoClient,
+      client: pendingClient,
       permissionMode: "default",
       maxConcurrent: 3,
       idleTimeoutMs: 60_000,
@@ -222,6 +233,8 @@ describe("chat routes", () => {
 
     const newRes = await request(a).post("/api/sessions/new").send({ cwd: "C:/p1" });
     const continueRes = await request(a).post("/api/sessions/s-continue/continue").send({ projectId: "proj-2" });
+    await request(a).post(`/api/sessions/${newRes.body.runId}/message`).send({ text: "ping new" });
+    await request(a).post(`/api/sessions/${continueRes.body.runId}/message`).send({ text: "ping continue" });
 
     const res = await request(a).get("/api/sessions/active");
 
@@ -233,12 +246,14 @@ describe("chat routes", () => {
           runId: newRes.body.runId,
           kind: "new",
           cwd: "C:/p1",
+          status: "executing",
         }),
         expect.objectContaining({
           runId: continueRes.body.runId,
           kind: "continue",
           sessionId: "s-continue",
           projectId: "proj-2",
+          status: "executing",
         }),
       ])
     );
@@ -461,6 +476,40 @@ describe("chat routes", () => {
   });
 
   describe("POST /sessions/new with cwd", () => {
+    it("宿主 path.isAbsolute 不识别 Windows 路径时，仍应接受合法 cwd", async () => {
+      const isAbsoluteSpy = vi
+        .spyOn(path, "isAbsolute")
+        .mockImplementation((value) => String(value).startsWith("/"));
+
+      const mgr = new SessionManager({
+        client: echoClient,
+        permissionMode: "default",
+        maxConcurrent: 4,
+        idleTimeoutMs: 60_000,
+      });
+      const spy = vi.spyOn(mgr, "startNew");
+      const a = express();
+      a.use(express.json());
+      a.use(
+        "/api",
+        createChatRouter(
+          mgr,
+          undefined,
+          (cwd) => cwd === "C:/valid/project"
+        )
+      );
+
+      const res = await request(a)
+        .post("/api/sessions/new")
+        .send({ cwd: "C:/valid/project" });
+
+      expect(res.status).toBe(200);
+      expect(typeof res.body.runId).toBe("string");
+      expect(spy).toHaveBeenCalledWith(expect.anything(), "C:/valid/project");
+
+      isAbsoluteSpy.mockRestore();
+    });
+
     it("请求体带合法 cwd(存在的目录)→ 200 返回 runId,且 sessionManager.startNew 被调用时传入该 cwd", async () => {
       const mgr = new SessionManager({
         client: echoClient,

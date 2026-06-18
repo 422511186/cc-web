@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import * as shared from './index.js';
 import type { PendingPrompt, ServerEvent } from './events.js';
 
 describe('shared events contracts', () => {
+  it('barrel export 暴露共享契约入口', () => {
+    expect(shared).toBeDefined();
+    expect(Object.prototype.toString.call(shared)).toBe('[object Module]');
+  });
+
   it('PermissionPrompt 允许携带可选 diff 预览', () => {
     const prompt: PendingPrompt = {
       kind: 'permission',

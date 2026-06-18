@@ -49,11 +49,14 @@ npm run build
 # 运行全部包的测试
 npm test
 
+# 运行全部包测试并校验覆盖率门槛
+npm run test:coverage
+
 # 开发模式
 npm run dev:server   # 启动后端（tsx watch，需要环境变量，见下）
 npm run dev:web      # 启动前端 Vite dev server（端口 3000，/api 代理到 3002）
 
-# GitHub Actions CI（仅 develop）
+# GitHub Actions CI（仅 develop，包含 coverage gate）
 gh run list --branch develop --workflow ci.yml
 gh run view <run-id>
 gh run view <run-id> --log

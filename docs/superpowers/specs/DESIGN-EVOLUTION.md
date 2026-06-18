@@ -332,8 +332,9 @@ export type ServerEvent =
 - ✅ 远端校验步骤保持与本地一致：
   - `npm ci`
   - `npm run build`
-  - `npm test`
+  - `npm run test:coverage`
 - ✅ 已补充一个契约测试 `packages/shared/src/ciWorkflow.test.ts`，约束 workflow 文件存在、触发分支正确、并执行安装/构建/测试
+- ✅ 三个 workspace 均补充 `vitest --coverage` 配置与全局阈值，CI 会对覆盖率不达标直接失败
 
 **动机**:
 1. `develop` 需要作为持续集成与日常开发的稳定落点，不能在一次 PR 合并后被顺手删掉
@@ -342,7 +343,24 @@ export type ServerEvent =
 
 **影响**:
 - 以后改动只要推到 `develop`，就会自动触发一轮完整构建与测试
+- 同时会校验覆盖率阈值，不再只是“测试跑完就算过”
 - 可直接用 `gh run list / view / watch` 读取 CI 结果和日志，无需手动翻网页
+
+---
+
+### 12.1 CI 校验补齐跨平台路径语义
+
+**背景**: 第一轮 `develop` CI 在 GitHub Linux runner 上暴露出一组本地 Windows 环境不明显的问题：路径穿越检测、`cwd` 绝对路径校验、附件路径断言、活跃会话列表测试都混入了宿主平台假设。
+
+**实际实现** (2026-06-18):
+- ✅ `store.ts` 的 `deleteSession()` 先拒绝任何带 `/`、`\\`、盘符前缀、UNC 前缀的 `projectId/sessionId`
+- ✅ `chatRoutes.ts` 引入 `isSafeAbsoluteCwd()`，既接受宿主 OS 绝对路径，也接受 Windows 盘符 / UNC 绝对路径
+- ✅ `chatRoutes.test.ts` 的附件路径断言改为 `path.normalize(...)`，不再把反斜杠写死
+- ✅ `/sessions/active` 测试改为使用长活 fake client，避免 `new` 会话在断言前自然退出
+
+**影响**:
+1. 本地 Windows 开发与 GitHub Linux CI 的路径安全语义终于收敛到同一套规则
+2. CI 失败更能代表真实回归，而不是“平台差异把测试绊倒”
 
 ---
 
