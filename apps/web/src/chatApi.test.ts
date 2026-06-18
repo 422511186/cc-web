@@ -1,11 +1,34 @@
 import { vi, beforeEach, afterEach } from 'vitest';
+import * as chatApi from './chatApi';
 import { closeSession, startNew, listActiveAgents, closeAgent, heartbeatSession, respond } from './chatApi';
+import type { CodeRelayTransport } from '@coderelay/transport';
+
+function fakeTransport(): CodeRelayTransport & {
+  request: ReturnType<typeof vi.fn>;
+  subscribe: ReturnType<typeof vi.fn>;
+} {
+  return {
+    request: vi.fn(),
+    subscribe: vi.fn(),
+  };
+}
+
+function setChatTransportForTest(transport: CodeRelayTransport | null): void {
+  const setter = (chatApi as unknown as {
+    setChatTransport?: (transport: CodeRelayTransport | null) => void;
+  }).setChatTransport;
+  expect(setter).toBeTypeOf('function');
+  setter?.(transport);
+}
 
 beforeEach(() => {
   Storage.prototype.getItem = vi.fn(() => 'tok');
 });
 
 afterEach(() => {
+  (chatApi as unknown as {
+    setChatTransport?: (transport: CodeRelayTransport | null) => void;
+  }).setChatTransport?.(null);
   vi.restoreAllMocks();
 });
 
@@ -63,6 +86,21 @@ describe('startNew', () => {
     expect(url).toBe('/api/sessions/new');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ cwd: 'C:/my/project' });
+  });
+
+  test('注入 transport 时通过 transport 发起新会话请求', async () => {
+    const transport = fakeTransport();
+    transport.request.mockResolvedValue({ runId: 'new-run-3' });
+    setChatTransportForTest(transport);
+
+    const runId = await startNew('C:/my/project');
+
+    expect(runId).toBe('new-run-3');
+    expect(transport.request).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/sessions/new',
+      body: { cwd: 'C:/my/project' },
+    });
   });
 });
 

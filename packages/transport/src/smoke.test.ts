@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createTransportScaffold } from "./index.js";
+import { HttpTransport } from "./index.js";
 
-describe("@coderelay/transport scaffold", () => {
-  it("exposes the package name", () => {
-    expect(createTransportScaffold().packageName).toBe("@coderelay/transport");
+describe("@coderelay/transport", () => {
+  it("exposes HttpTransport", () => {
+    expect(typeof HttpTransport).toBe("function");
   });
 });

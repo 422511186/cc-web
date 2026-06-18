@@ -48,7 +48,7 @@ describe("coverage configuration", () => {
     expect(rootPkg.name).toBe("coderelay");
     expect(rootPkg.workspaces).toEqual(["apps/*", "packages/*"]);
     expect(rootPkg.scripts.build).toBe(
-      "npm run build --workspace @coderelay/shared && npm run build --workspaces --if-present"
+      "npm run build --workspace @coderelay/shared && npm run build --workspace @coderelay/transport && npm run build --workspaces --if-present"
     );
     expect(rootPkg.scripts["test:coverage"]).toBeTruthy();
 

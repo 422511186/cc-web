@@ -1,5 +1,16 @@
 import { vi, beforeEach, afterEach } from 'vitest';
 import { createApiClient } from './api';
+import type { CodeRelayTransport, TransportStream } from '@coderelay/transport';
+
+function fakeTransport(): CodeRelayTransport & {
+  request: ReturnType<typeof vi.fn>;
+  subscribe: ReturnType<typeof vi.fn>;
+} {
+  return {
+    request: vi.fn(),
+    subscribe: vi.fn(),
+  };
+}
 
 describe('ApiClient.deleteSession', () => {
   beforeEach(() => {
@@ -86,6 +97,41 @@ describe('ApiClient.connectSSE', () => {
     client.disconnect();
 
     expect(close).toHaveBeenCalledTimes(1);
-    expect((client as unknown as { eventSource: EventSource | null }).eventSource).toBeNull();
+  });
+
+  test('注入 transport 时通过 transport.subscribe 订阅浏览事件并支持关闭', () => {
+    const close = vi.fn();
+    const transport = fakeTransport();
+    transport.subscribe.mockReturnValue({ close } satisfies TransportStream);
+    const onUpdate = vi.fn();
+
+    const client = createApiClient('test-token-123', undefined, transport);
+    client.connectSSE(onUpdate);
+
+    expect(transport.subscribe).toHaveBeenCalledWith({
+      path: '/events',
+      eventName: 'session-update',
+      onEvent: onUpdate,
+    });
+
+    client.disconnect();
+
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ApiClient transport injection', () => {
+  test('listProjects 通过注入的 transport 发起请求', async () => {
+    const transport = fakeTransport();
+    transport.request.mockResolvedValue({ projects: [] });
+
+    const client = createApiClient('test-token-123', undefined, transport);
+    const result = await client.listProjects();
+
+    expect(result).toEqual({ projects: [] });
+    expect(transport.request).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/projects',
+    });
   });
 });

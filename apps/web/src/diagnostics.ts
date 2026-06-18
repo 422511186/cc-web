@@ -1,8 +1,21 @@
+import { HttpTransport, type CodeRelayTransport } from "@coderelay/transport";
+
 export type ClientLogDetail = Record<string, unknown>;
 
-function authHeaders(): Record<string, string> {
-  const token = sessionStorage.getItem("authToken");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+let diagnosticsTransport: CodeRelayTransport | null = null;
+
+export function setDiagnosticsTransport(transport: CodeRelayTransport | null): void {
+  diagnosticsTransport = transport;
+}
+
+function activeTransport(): CodeRelayTransport {
+  return (
+    diagnosticsTransport ??
+    new HttpTransport({
+      baseUrl: "/api",
+      getAuthToken: () => sessionStorage.getItem("authToken"),
+    })
+  );
 }
 
 export function clientLog(event: string, detail: ClientLogDetail = {}): void {
@@ -15,13 +28,10 @@ export function clientLog(event: string, detail: ClientLogDetail = {}): void {
   console.debug("[cc-web:client]", payload);
 
   try {
-    void fetch("/api/debug/client-log", {
+    void activeTransport().request<void, typeof payload>({
       method: "POST",
-      headers: {
-        ...authHeaders(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+      path: "/debug/client-log",
+      body: payload,
       keepalive: true,
     }).catch(() => {
       // 诊断日志不能影响主流程

@@ -4,6 +4,7 @@ import type {
   SessionDetailResponse,
   SearchResponse,
 } from '@coderelay/shared';
+import { HttpTransport, type CodeRelayTransport, type TransportStream } from '@coderelay/transport';
 
 const API_BASE = '/api';
 
@@ -13,32 +14,39 @@ interface SSESessionUpdate {
 }
 
 class ApiClient {
-  private eventSource: EventSource | null = null;
+  private stream: TransportStream | null = null;
+  private transport: CodeRelayTransport;
 
   constructor(
     private token: string,
     private onUnauthorized?: () => void,
-  ) {}
+    transport?: CodeRelayTransport,
+  ) {
+    this.transport =
+      transport ??
+      new HttpTransport({
+        baseUrl: API_BASE,
+        getAuthToken: () => this.token,
+        onUnauthorized: this.onUnauthorized,
+      });
+  }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const headers = new Headers(options.headers);
-    headers.set('Authorization', `Bearer ${this.token}`);
-    headers.set('Content-Type', 'application/json');
-
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers,
-    });
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        this.onUnauthorized?.();
-      }
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.error || `HTTP ${response.status}`);
-    }
-
-    return response.json();
+    const headers = Object.fromEntries(new Headers(options.headers).entries());
+    const request = {
+      method: options.method ?? 'GET',
+      path,
+    } as {
+      method: string;
+      path: string;
+      headers?: Record<string, string>;
+      body?: BodyInit | null;
+      keepalive?: boolean;
+    };
+    if (Object.keys(headers).length > 0) request.headers = headers;
+    if (options.body !== undefined && options.body !== null) request.body = options.body;
+    if (options.keepalive !== undefined) request.keepalive = options.keepalive;
+    return this.transport.request<T>(request);
   }
 
   async listProjects(): Promise<ProjectsResponse> {
@@ -77,25 +85,12 @@ class ApiClient {
 
   connectSSE(onSessionUpdate: (update: SSESessionUpdate) => void): () => void {
     // Close existing connection if any
-    if (this.eventSource) {
-      this.eventSource.close();
-    }
-
-    // Create new EventSource with auth token in URL (since EventSource doesn't support custom headers)
-    const url = `${API_BASE}/events?token=${encodeURIComponent(this.token)}`;
-    this.eventSource = new EventSource(url);
-    this.eventSource.onopen = () => {};
-
-    this.eventSource.addEventListener('session-update', (event) => {
-      try {
-        const data = JSON.parse(event.data) as SSESessionUpdate;
-        onSessionUpdate(data);
-      } catch {
-        // 忽略损坏的 SSE 事件，保持连接
-      }
+    this.disconnect();
+    this.stream = this.transport.subscribe<SSESessionUpdate>({
+      path: '/events',
+      eventName: 'session-update',
+      onEvent: onSessionUpdate,
     });
-
-    this.eventSource.onerror = () => {};
 
     // Return cleanup function
     return () => {
@@ -104,17 +99,17 @@ class ApiClient {
   }
 
   disconnect(): void {
-    if (!this.eventSource) return;
-    this.eventSource.close();
-    this.eventSource = null;
+    this.stream?.close();
+    this.stream = null;
   }
 }
 
 export function createApiClient(
   token: string,
   onUnauthorized?: () => void,
+  transport?: CodeRelayTransport,
 ): ApiClient {
-  return new ApiClient(token, onUnauthorized);
+  return new ApiClient(token, onUnauthorized, transport);
 }
 
 export type { ApiClient };

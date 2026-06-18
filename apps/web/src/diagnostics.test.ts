@@ -1,4 +1,6 @@
 import { vi } from "vitest";
+import type { CodeRelayTransport } from "@coderelay/transport";
+import * as diagnostics from "./diagnostics";
 import { clientLog } from "./diagnostics";
 
 describe("client diagnostics", () => {
@@ -37,5 +39,31 @@ describe("client diagnostics", () => {
         keepalive: true,
       })
     );
+  });
+
+  test("注入 transport 时通过 transport 上报诊断日志", () => {
+    const transport: CodeRelayTransport = {
+      request: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(),
+    };
+    const setter = (diagnostics as unknown as {
+      setDiagnosticsTransport?: (transport: CodeRelayTransport | null) => void;
+    }).setDiagnosticsTransport;
+    expect(setter).toBeTypeOf("function");
+    setter?.(transport);
+
+    clientLog("transport.log", { runId: "run-2" });
+
+    expect(transport.request).toHaveBeenCalledWith({
+      method: "POST",
+      path: "/debug/client-log",
+      body: expect.objectContaining({
+        event: "transport.log",
+        runId: "run-2",
+      }),
+      keepalive: true,
+    });
+
+    setter?.(null);
   });
 });

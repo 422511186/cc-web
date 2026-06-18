@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { ServerEvent, PendingPrompt } from "@coderelay/shared";
+import { HttpTransport, type CodeRelayTransport, type TransportStream } from "@coderelay/transport";
 import { clientLog } from "./diagnostics";
 
 /** 前端侧的一条流式消息 */
@@ -33,9 +34,20 @@ export interface SessionState {
   closedReason: string | null;
 }
 
-function tokenParam(): string {
-  const t = sessionStorage.getItem("authToken");
-  return t ? `?token=${encodeURIComponent(t)}` : "";
+let sessionTransport: CodeRelayTransport | null = null;
+
+export function setSessionTransport(transport: CodeRelayTransport | null): void {
+  sessionTransport = transport;
+}
+
+function activeSessionTransport(): CodeRelayTransport {
+  return (
+    sessionTransport ??
+    new HttpTransport({
+      baseUrl: "/api",
+      getAuthToken: () => sessionStorage.getItem("authToken"),
+    })
+  );
 }
 
 /** 订阅一个活跃会话的 SSE 流 */
@@ -49,7 +61,7 @@ export function useSession(runId: string | null): SessionState {
   const [effort, setEffort] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
+  const streamRef = useRef<TransportStream | null>(null);
   const rebuildingRef = useRef(false);
 
   const apply = useCallback((event: ServerEvent) => {
@@ -172,12 +184,9 @@ export function useSession(runId: string | null): SessionState {
     function connect() {
       if (cancelled || !runId) return;
       clientLog("sse.connect", { runId });
-      const es = new EventSource(
-        `/api/sessions/${encodeURIComponent(runId)}/stream${tokenParam()}`
-      );
-      esRef.current = es;
-
-      es.onopen = () => {
+      const stream = activeSessionTransport().subscribe<ServerEvent>({
+        path: `/sessions/${encodeURIComponent(runId)}/stream`,
+        onOpen: () => {
         clientLog("sse.open", { runId });
         // (重)连接成功后等待首条重放事件时再原子重建。
         // 这样在 onopen 到首条重放之间不会瞬间清空 UI 造成闪烁。
@@ -188,22 +197,17 @@ export function useSession(runId: string | null): SessionState {
         setConnected(true);
         // 连接成功，重置重试计数
         retryCount = 0;
-      };
-      es.onmessage = (e) => {
+        },
+        onEvent: (event) => {
         // 收到首条消息即视为已连接(onopen 可能延后触发)
         setConnected(true);
-        try {
-          const event = JSON.parse(e.data) as ServerEvent;
-          clientLog("sse.message", { runId, type: event.type });
-          apply(event);
-        } catch {
-          /* 忽略心跳/坏帧 */
-        }
-      };
-      es.onerror = () => {
+        clientLog("sse.message", { runId, type: event.type });
+        apply(event);
+        },
+        onError: () => {
         clientLog("sse.error", { runId, retryCount });
         setConnected(false);
-        es.close();
+        streamRef.current?.close();
 
         // 检查是否超过重试次数
         if (retryCount >= MAX_RETRIES) {
@@ -216,7 +220,9 @@ export function useSession(runId: string | null): SessionState {
         retryCount++;
 
         retry = setTimeout(connect, delay);
-      };
+        },
+      });
+      streamRef.current = stream;
     }
     connect();
 
@@ -224,8 +230,8 @@ export function useSession(runId: string | null): SessionState {
       cancelled = true;
       if (retry) clearTimeout(retry);
       clientLog("sse.cleanup", { runId });
-      esRef.current?.close();
-      esRef.current = null;
+      streamRef.current?.close();
+      streamRef.current = null;
     };
   }, [runId, apply]);
 

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@coderelay/shared": "*",
+    "@coderelay/transport": "*",
     "dompurify": "^3.4.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -6,23 +6,33 @@ import type {
   PromptAnswer,
   UploadResponse,
 } from "@coderelay/shared";
+import { HttpTransport, TransportError, type CodeRelayTransport } from "@coderelay/transport";
 
-/** 从 sessionStorage 读 token,拼成鉴权 header(与 App 登录态一致) */
-function authHeaders(): Record<string, string> {
-  const t = sessionStorage.getItem("authToken");
-  return t ? { Authorization: `Bearer ${t}` } : {};
+let chatTransport: CodeRelayTransport | null = null;
+
+export function setChatTransport(transport: CodeRelayTransport | null): void {
+  chatTransport = transport;
+}
+
+function activeTransport(): CodeRelayTransport {
+  return (
+    chatTransport ??
+    new HttpTransport({
+      baseUrl: "/api",
+      getAuthToken: () => sessionStorage.getItem("authToken"),
+    })
+  );
 }
 
 /** 新建对话,返回 runId */
 export async function startNew(cwd?: string): Promise<string> {
-  const res = await fetch("/api/sessions/new", {
+  const body = cwd ? { cwd } : {};
+  const response = await activeTransport().request<StartSessionResponse, typeof body>({
     method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(cwd ? { cwd } : {}),
+    path: "/sessions/new",
+    body,
   });
-  if (!res.ok) throw new Error(`startNew failed: ${res.status}`);
-  const body = (await res.json()) as StartSessionResponse;
-  return body.runId;
+  return response.runId;
 }
 
 /** 续聊已有 session,返回 runId。projectId 用于后端定位 session 真实项目目录 */
@@ -30,67 +40,56 @@ export async function startContinue(
   sessionId: string,
   projectId?: string
 ): Promise<string> {
-  const res = await fetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/continue`,
-    {
-      method: "POST",
-      headers: { ...authHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId }),
-    }
-  );
-  if (!res.ok) {
-    // 原项目目录已删除等情况后端返回 409 + 友好 error,透传给用户
-    const msg = await res
-      .json()
-      .then((b: { error?: string }) => b?.error)
-      .catch(() => undefined);
-    throw new Error(msg ?? `startContinue failed: ${res.status}`);
-  }
-  const body = (await res.json()) as StartSessionResponse;
-  return body.runId;
+  const response = await activeTransport().request<StartSessionResponse, { projectId?: string }>({
+    method: "POST",
+    path: `/sessions/${encodeURIComponent(sessionId)}/continue`,
+    body: { projectId },
+  });
+  return response.runId;
 }
 
 /** 快速探测一个 run 是否仍在后端活跃池中，供前端恢复旧连接前先判活。 */
 export async function probeRun(runId: string): Promise<boolean> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}`, {
-    method: "GET",
-    headers: { ...authHeaders() },
-  });
-  if (res.status === 404) return false;
-  if (!res.ok) throw new Error(`probeRun failed: ${res.status}`);
-  return true;
+  try {
+    await activeTransport().request<unknown>({
+      method: "GET",
+      path: `/sessions/${encodeURIComponent(runId)}`,
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof TransportError && error.status === 404) return false;
+    throw error;
+  }
 }
 
 export async function listActiveAgents(): Promise<ActiveAgentsResponse> {
-  const res = await fetch("/api/sessions/active", {
+  return activeTransport().request<ActiveAgentsResponse>({
     method: "GET",
-    headers: { ...authHeaders() },
+    path: "/sessions/active",
   });
-  if (!res.ok) throw new Error(`listActiveAgents failed: ${res.status}`);
-  return (await res.json()) as ActiveAgentsResponse;
 }
 
 export async function closeAgent(runId: string): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/close`, {
+  await activeTransport().request<void>({
     method: "POST",
-    headers: { ...authHeaders() },
+    path: `/sessions/${encodeURIComponent(runId)}/close`,
   });
-  if (!res.ok) throw new Error(`closeAgent failed: ${res.status}`);
 }
 
 export async function heartbeatSession(runId: string): Promise<SessionHeartbeatResponse> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/heartbeat`, {
-    method: "POST",
-    headers: { ...authHeaders() },
-  });
-  if (!res.ok) {
-    const error = new Error(`heartbeatSession failed: ${res.status}`) as Error & {
-      status?: number;
-    };
-    error.status = res.status;
+  try {
+    return await activeTransport().request<SessionHeartbeatResponse>({
+      method: "POST",
+      path: `/sessions/${encodeURIComponent(runId)}/heartbeat`,
+    });
+  } catch (error) {
+    if (error instanceof TransportError) {
+      const enriched = error as Error & { status?: number };
+      enriched.status = error.status;
+      throw enriched;
+    }
     throw error;
   }
-  return (await res.json()) as SessionHeartbeatResponse;
 }
 
 /** 发一条用户消息 */
@@ -98,12 +97,11 @@ export async function sendMessage(
   runId: string,
   req: SendMessageRequest
 ): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/message`, {
+  await activeTransport().request<void, SendMessageRequest>({
     method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+    path: `/sessions/${encodeURIComponent(runId)}/message`,
+    body: req,
   });
-  if (!res.ok) throw new Error(`sendMessage failed: ${res.status}`);
 }
 
 /** 提交对待答事项的回答 */
@@ -111,13 +109,11 @@ export async function respond(
   runId: string,
   answer: PromptAnswer
 ): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/respond`, {
+  const body = await activeTransport().request<{ ok?: boolean }, PromptAnswer>({
     method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(answer),
+    path: `/sessions/${encodeURIComponent(runId)}/respond`,
+    body: answer,
   });
-  if (!res.ok) throw new Error(`respond failed: ${res.status}`);
-  const body = (await res.json()) as { ok?: boolean };
   if (!body.ok) {
     throw new Error("pending prompt is no longer active");
   }
@@ -127,9 +123,9 @@ export async function respond(
  * 尽力而为:失败静默,不打断切换。keepalive 让请求在页面卸载时仍能发出。 */
 export async function closeSession(runId: string): Promise<void> {
   try {
-    await fetch(`/api/sessions/${encodeURIComponent(runId)}`, {
+    await activeTransport().request<void>({
       method: "DELETE",
-      headers: { ...authHeaders() },
+      path: `/sessions/${encodeURIComponent(runId)}`,
       keepalive: true,
     });
   } catch {
@@ -139,22 +135,26 @@ export async function closeSession(runId: string): Promise<void> {
 
 /** 强制终止会话执行(用户点击停止按钮) */
 export async function abortSession(runId: string): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/abort`, {
-    method: "POST",
-    headers: { ...authHeaders() },
-  });
-  if (!res.ok) throw new Error(`abortSession failed: ${res.status}`);
+  try {
+    await activeTransport().request<void>({
+      method: "POST",
+      path: `/sessions/${encodeURIComponent(runId)}/abort`,
+    });
+  } catch (error) {
+    if (error instanceof TransportError) {
+      throw new Error(`abortSession failed: ${error.status}`);
+    }
+    throw error;
+  }
 }
 
 /** 上传一个文件,返回引用 */
 export async function uploadFile(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/uploads", {
+  return activeTransport().request<UploadResponse, FormData>({
     method: "POST",
-    headers: { ...authHeaders() }, // 不要手动设 Content-Type,浏览器会带 boundary
+    path: "/uploads",
     body: form,
   });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  return (await res.json()) as UploadResponse;
 }
