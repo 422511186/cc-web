@@ -11,28 +11,54 @@ function readJson(relativePath: string): any {
   return JSON.parse(readFileSync(resolve(repoRoot, relativePath), "utf8"));
 }
 
+const workspaces = [
+  {
+    path: "apps/host",
+    packageName: "@coderelay/host",
+  },
+  {
+    path: "apps/web",
+    packageName: "@coderelay/web",
+  },
+  {
+    path: "apps/signal",
+    packageName: "@coderelay/signal",
+  },
+  {
+    path: "packages/shared",
+    packageName: "@coderelay/shared",
+  },
+  {
+    path: "packages/transport",
+    packageName: "@coderelay/transport",
+  },
+  {
+    path: "packages/p2p-core",
+    packageName: "@coderelay/p2p-core",
+  },
+  {
+    path: "packages/test-utils",
+    packageName: "@coderelay/test-utils",
+  },
+];
+
 describe("coverage configuration", () => {
   it("root 与各 workspace 都应提供 test:coverage 脚本", () => {
     const rootPkg = readJson("package.json");
-    const sharedPkg = readJson("packages/shared/package.json");
-    const serverPkg = readJson("packages/server/package.json");
-    const webPkg = readJson("packages/web/package.json");
-
+    expect(rootPkg.name).toBe("coderelay");
+    expect(rootPkg.workspaces).toEqual(["apps/*", "packages/*"]);
     expect(rootPkg.scripts["test:coverage"]).toBeTruthy();
-    expect(sharedPkg.scripts["test:coverage"]).toBeTruthy();
-    expect(serverPkg.scripts["test:coverage"]).toBeTruthy();
-    expect(webPkg.scripts["test:coverage"]).toBeTruthy();
+
+    for (const workspace of workspaces) {
+      const pkg = readJson(`${workspace.path}/package.json`);
+      expect(pkg.name).toBe(workspace.packageName);
+      expect(pkg.scripts["test:coverage"]).toBeTruthy();
+    }
   });
 
-  it("shared / server / web 的 Vitest 配置都应声明 v8 coverage 与 thresholds", () => {
-    const configs = [
-      "packages/shared/vitest.config.ts",
-      "packages/server/vitest.config.ts",
-      "packages/web/vitest.config.ts",
-    ];
-
-    for (const config of configs) {
-      const fullPath = resolve(repoRoot, config);
+  it("所有 CodeRelay workspace 的 Vitest 配置都应声明 v8 coverage 与 thresholds", () => {
+    for (const workspace of workspaces) {
+      const fullPath = resolve(repoRoot, workspace.path, "vitest.config.ts");
       expect(existsSync(fullPath)).toBe(true);
 
       const content = readFileSync(fullPath, "utf8");
