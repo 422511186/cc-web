@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -38,5 +39,17 @@ describe("coverage configuration", () => {
       expect(content).toContain("provider: 'v8'");
       expect(content).toContain("thresholds");
     }
+  });
+
+  it("不应跟踪已被 .gitignore 忽略的依赖或构建产物", () => {
+    const ignoredTrackedFiles = execFileSync(
+      "git",
+      ["ls-files", "-ci", "--exclude-standard"],
+      { cwd: repoRoot, encoding: "utf8" }
+    )
+      .split(/\r?\n/)
+      .filter(Boolean);
+
+    expect(ignoredTrackedFiles).toEqual([]);
   });
 });
