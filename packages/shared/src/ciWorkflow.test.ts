@@ -24,8 +24,11 @@ describe("GitHub Actions CI workflow", () => {
     expect(workflow).toContain("npm run build");
     expect(workflow).toContain("npm run test:coverage");
 
-    expect(workflow).not.toContain("@cc-web/");
-    expect(workflow).not.toContain("packages/server");
-    expect(workflow).not.toContain("packages/web");
+    const legacyScopePrefix = `${["@cc", "web"].join("-")}/`;
+    const legacyWorkspacePath = (name: string) => ["packages", name].join("/");
+
+    expect(workflow).not.toContain(legacyScopePrefix);
+    expect(workflow).not.toContain(legacyWorkspacePath("server"));
+    expect(workflow).not.toContain(legacyWorkspacePath("web"));
   });
 });

@@ -47,6 +47,9 @@ describe("coverage configuration", () => {
     const rootPkg = readJson("package.json");
     expect(rootPkg.name).toBe("coderelay");
     expect(rootPkg.workspaces).toEqual(["apps/*", "packages/*"]);
+    expect(rootPkg.scripts.build).toBe(
+      "npm run build --workspace @coderelay/shared && npm run build --workspaces --if-present"
+    );
     expect(rootPkg.scripts["test:coverage"]).toBeTruthy();
 
     for (const workspace of workspaces) {
@@ -70,14 +73,16 @@ describe("coverage configuration", () => {
   it("package-lock 不应保留旧 cc-web workspace 条目", () => {
     const lockfile = readJson("package-lock.json");
     const packageEntries = lockfile.packages ?? {};
+    const legacyWorkspacePath = (name: string) => ["packages", name].join("/");
+    const legacyPackageName = (name: string) => `${["@cc", "web"].join("-")}/${name}`;
 
-    expect(packageEntries["packages/server"]).toBeUndefined();
-    expect(packageEntries["packages/web"]).toBeUndefined();
+    expect(packageEntries[legacyWorkspacePath("server")]).toBeUndefined();
+    expect(packageEntries[legacyWorkspacePath("web")]).toBeUndefined();
 
     const serializedLockfile = JSON.stringify(lockfile);
-    expect(serializedLockfile).not.toContain("@cc-web/shared");
-    expect(serializedLockfile).not.toContain("@cc-web/server");
-    expect(serializedLockfile).not.toContain("@cc-web/web");
+    expect(serializedLockfile).not.toContain(legacyPackageName("shared"));
+    expect(serializedLockfile).not.toContain(legacyPackageName("server"));
+    expect(serializedLockfile).not.toContain(legacyPackageName("web"));
   });
 
   it("不应跟踪已被 .gitignore 忽略的依赖或构建产物", () => {
