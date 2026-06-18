@@ -67,6 +67,19 @@ describe("coverage configuration", () => {
     }
   });
 
+  it("package-lock 不应保留旧 cc-web workspace 条目", () => {
+    const lockfile = readJson("package-lock.json");
+    const packageEntries = lockfile.packages ?? {};
+
+    expect(packageEntries["packages/server"]).toBeUndefined();
+    expect(packageEntries["packages/web"]).toBeUndefined();
+
+    const serializedLockfile = JSON.stringify(lockfile);
+    expect(serializedLockfile).not.toContain("@cc-web/shared");
+    expect(serializedLockfile).not.toContain("@cc-web/server");
+    expect(serializedLockfile).not.toContain("@cc-web/web");
+  });
+
   it("不应跟踪已被 .gitignore 忽略的依赖或构建产物", () => {
     const ignoredTrackedFiles = execFileSync(
       "git",
