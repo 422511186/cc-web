@@ -1,0 +1,21 @@
+{
+  "name": "@coderelay/e2e",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed",
+    "test:cross-webrtc-script": "node --test scripts/cross-machine-webrtc.test.mjs",
+    "cross-webrtc": "node scripts/cross-machine-webrtc.mjs",
+    "install:browsers": "playwright install chromium"
+  },
+  "dependencies": {
+    "@coderelay/transport": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}

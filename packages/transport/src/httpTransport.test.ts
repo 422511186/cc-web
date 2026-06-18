@@ -32,6 +32,29 @@ class FakeEventSource {
 }
 
 describe("HttpTransport", () => {
+  it("默认 fetch 以 globalThis 作为 this 调用,兼容浏览器原生 fetch", async () => {
+    const originalFetch = globalThis.fetch;
+    const seenThisValues: unknown[] = [];
+    globalThis.fetch = function (this: unknown) {
+      seenThisValues.push(this);
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    } as typeof fetch;
+
+    try {
+      const transport = new HttpTransport();
+
+      await expect(transport.request({ path: "/projects" })).resolves.toEqual({ ok: true });
+      expect(seenThisValues).toEqual([globalThis]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("request 使用 fetch 发送 JSON 请求并附带 Bearer token", async () => {
     const fetchFn = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), {

@@ -39,6 +39,19 @@ function mockStore(): SessionStore {
 }
 
 describe("createApp", () => {
+  it("exposes an unauthenticated health check for local E2E readiness", async () => {
+    const cfg = baseConfig();
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+    try {
+      const res = await request(app).get("/healthz");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, service: "coderelay-host" });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
   it("sets CSP header on all responses", async () => {
     const cfg = baseConfig();
     const app = createApp(cfg, mockStore(), undefined, idleClient);

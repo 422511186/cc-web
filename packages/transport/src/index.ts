@@ -65,7 +65,7 @@ export class HttpTransport implements CodeRelayTransport {
     this.baseUrl = options.baseUrl ?? "";
     this.getAuthToken = options.getAuthToken ?? (() => null);
     this.onUnauthorized = options.onUnauthorized;
-    this.fetchFn = options.fetchFn ?? fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.eventSourceFactory =
       options.eventSourceFactory ??
       ((url) => new EventSource(url) as TransportEventSource);

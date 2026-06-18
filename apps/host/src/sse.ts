@@ -25,6 +25,7 @@ export class SSEManager {
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
     });
+    res.write(':connected\n\n');
 
     // Add client
     const clientId = this.nextClientId++;

@@ -27,6 +27,10 @@ export function createApp(
   // CSP 安全策略（全局，先于鉴权）
   app.use(createCspMiddleware());
 
+  app.get("/healthz", (_req, res) => {
+    res.json({ ok: true, service: "coderelay-host" });
+  });
+
   // 鉴权前置于所有 /api 路由
   app.use("/api", createAuthMiddleware(config.authToken));
 

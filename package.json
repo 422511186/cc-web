@@ -11,6 +11,7 @@
     "build": "npm run build --workspace @coderelay/shared && npm run build --workspace @coderelay/transport && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
+    "test:e2e": "npm run build && npm run e2e --workspace @coderelay/e2e",
     "dev:host": "npm run dev --workspace @coderelay/host",
     "dev:server": "npm run dev:host",
     "dev:web": "npm run dev --workspace @coderelay/web",

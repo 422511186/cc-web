@@ -39,6 +39,12 @@ describe('SSEManager', () => {
     });
   });
 
+  it('writes an initial comment so fetch-based SSE bridges observe stream open promptly', () => {
+    sseManager.handleConnection(mockResponse as Response);
+
+    expect(writtenData[0]).toBe(':connected\n\n');
+  });
+
   it('sends session update event when session changes', async () => {
     sseManager.handleConnection(mockResponse as Response);
 

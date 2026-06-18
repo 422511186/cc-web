@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 
+const apiTarget = process.env.CODERELAY_DEV_API_TARGET ?? 'http://localhost:3002';
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -13,7 +15,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:3002',
+        target: apiTarget,
         changeOrigin: true,
       },
     },
