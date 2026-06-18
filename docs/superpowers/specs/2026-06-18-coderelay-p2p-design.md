@@ -75,6 +75,7 @@ CodeRelay Host
   - 用户电脑本地运行
   - 持有 Host 私钥和受信任 Client 列表
   - 继续提供本地 HTTP API
+  - 通过本机 CodeRelay Web HTTP 模式提供设备管理入口
   - 新增 P2P Bridge，接收 DataChannel 请求并转给本机业务层
 
 CodeRelay Signal
@@ -105,6 +106,8 @@ Signal 只参与建连、配对和重连：
 ```text
 CodeRelay Web <---- WebSocket ----> CodeRelay Signal <---- WebSocket ----> CodeRelay Host
 ```
+
+Host 不要求第一版提供 Electron 或原生桌面窗口。电脑端管理操作复用本机 HTTP 入口：用户在电脑上打开 `http://localhost:3000` 的 CodeRelay Web HTTP 模式页面，在“设备管理”中添加、确认或撤销手机设备。CLI 可以作为兜底入口，但不是主体验。
 
 ## 5. 入口与传输模式选择
 
@@ -295,7 +298,7 @@ Client/Web:
 首次配对流程：
 
 ```text
-1. Host 点击“添加设备”
+1. 用户在电脑本机打开 CodeRelay Host 的本地 Web UI，点击“添加设备”
 2. Host 生成一次性 pairingId + pairingSecret
 3. Host 显示二维码
 4. 手机扫码打开 CodeRelay Web
