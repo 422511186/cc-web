@@ -1,4 +1,4 @@
-import { RTCDataChannel, RTCPeerConnection } from "werift";
+import { RTCDataChannel, RTCPeerConnection, type PeerConfig, type RTCIceServer } from "werift";
 
 export type PeerStatus = "connecting" | "connected" | "disconnected";
 export type SignalStatus = "connected" | "disconnected";
@@ -26,6 +26,12 @@ export interface WeriftDataChannelPair {
   close(): Promise<void>;
 }
 
+export interface WeriftDataChannelPairOptions {
+  readonly iceServers?: readonly RTCIceServer[];
+  readonly requireRelay?: boolean;
+  readonly peerConnectionFactory?: (config: Partial<PeerConfig>) => RTCPeerConnection;
+}
+
 type RpcFrame =
   | { readonly type: "p2p.request"; readonly id: string; readonly body: unknown }
   | { readonly type: "p2p.response"; readonly id: string; readonly ok: true; readonly body: unknown }
@@ -35,8 +41,14 @@ const DATA_CHANNEL_LABEL = "coderelay";
 const REQUEST_TIMEOUT_MS = 5_000;
 const DISCONNECTED_ERROR = "P2P data channel is not connected";
 
-export async function createWeriftDataChannelPair(): Promise<WeriftDataChannelPair> {
-  const pair = new WeriftDataChannelPairImpl();
+export async function createWeriftDataChannelPair(
+  options: WeriftDataChannelPairOptions = {},
+): Promise<WeriftDataChannelPair> {
+  if (options.requireRelay && !hasTurnServer(options.iceServers ?? [])) {
+    throw new Error("TURN relay is required but no TURN servers were configured");
+  }
+
+  const pair = new WeriftDataChannelPairImpl(options);
   await pair.reconnect();
   return pair;
 }
@@ -47,13 +59,15 @@ class WeriftDataChannelPairImpl implements WeriftDataChannelPair {
   private clientConnection?: RTCPeerConnection;
   private hostConnection?: RTCPeerConnection;
 
+  constructor(private readonly options: WeriftDataChannelPairOptions) {}
+
   async reconnect(): Promise<void> {
     await this.closePeerConnections();
     this.client.markConnecting();
     this.host.markConnecting();
 
-    const clientConnection = new RTCPeerConnection();
-    const hostConnection = new RTCPeerConnection();
+    const clientConnection = this.createPeerConnection();
+    const hostConnection = this.createPeerConnection();
     const hostChannel = new Promise<RTCDataChannel>((resolve) => {
       hostConnection.ondatachannel = (event) => resolve(event.channel);
     });
@@ -100,6 +114,14 @@ class WeriftDataChannelPairImpl implements WeriftDataChannelPair {
         await connection.close();
       }),
     );
+  }
+
+  private createPeerConnection(): RTCPeerConnection {
+    const config: Partial<PeerConfig> = {
+      iceServers: [...(this.options.iceServers ?? [])],
+      iceTransportPolicy: this.options.requireRelay ? "relay" : "all",
+    };
+    return (this.options.peerConnectionFactory ?? ((peerConfig) => new RTCPeerConnection(peerConfig)))(config);
   }
 }
 
@@ -279,4 +301,8 @@ async function waitFor(predicate: () => boolean, errorMessage: string, timeoutMs
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(errorMessage);
+}
+
+function hasTurnServer(iceServers: readonly RTCIceServer[]): boolean {
+  return iceServers.some((server) => server.urls.startsWith("turn:") || server.urls.startsWith("turns:"));
 }

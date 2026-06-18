@@ -21,6 +21,13 @@ export interface SignalSession {
 
 export interface SignalHubOptions {
   readonly now?: () => number;
+  readonly iceServers?: readonly SignalIceServer[];
+}
+
+export interface SignalIceServer {
+  readonly urls: string;
+  readonly username?: string;
+  readonly credential?: string;
 }
 
 export interface StartSignalServerOptions extends SignalHubOptions {
@@ -66,6 +73,7 @@ interface AcceptedConnection {
 
 export class SignalHub {
   private readonly now: () => number;
+  private readonly iceServers: readonly SignalIceServer[];
   private nextSessionIndex = 0;
   private readonly hosts = new Map<string, HostRegistration>();
   private readonly pairings = new Map<string, PairingRegistration>();
@@ -74,6 +82,7 @@ export class SignalHub {
 
   constructor(options: SignalHubOptions = {}) {
     this.now = options.now ?? (() => Date.now());
+    this.iceServers = options.iceServers ?? [];
   }
 
   connectPeer(peer: SignalPeer): SignalSession {
@@ -94,6 +103,9 @@ export class SignalHub {
     switch (message.type) {
       case "host.online":
         this.handleHostOnline(session, message);
+        break;
+      case "turn.get":
+        this.handleTurnGet(session, message);
         break;
       case "pairing.open":
         this.handlePairingOpen(session, message);
@@ -152,6 +164,14 @@ export class SignalHub {
 
     this.removeHostRegistrationsForSession(session);
     this.hosts.set(hostId, { hostId, session });
+  }
+
+  private handleTurnGet(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    session.send({
+      type: "turn.config",
+      requestId: stringField(message, "requestId"),
+      iceServers: this.iceServers,
+    });
   }
 
   private handlePairingOpen(session: SignalSessionImpl, message: SignalInboundMessage): void {
