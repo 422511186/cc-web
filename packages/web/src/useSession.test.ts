@@ -1,7 +1,12 @@
 import { renderHook, act } from '@testing-library/react';
 import { vi, beforeEach, afterEach } from 'vitest';
 import { useSession } from './useSession';
+import { clientLog } from './diagnostics';
 import type { ServerEvent } from '@cc-web/shared';
+
+vi.mock('./diagnostics', () => ({
+  clientLog: vi.fn(),
+}));
 
 // 受控的 EventSource mock:能手动触发 open / message
 class FakeEventSource {
@@ -25,6 +30,7 @@ class FakeEventSource {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   FakeEventSource.instances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource =
     FakeEventSource as unknown;
@@ -36,6 +42,54 @@ afterEach(() => {
 });
 
 describe('useSession 服务端回显与重连重建', () => {
+  test('SSE 连接创建、打开、出错时上报诊断日志', () => {
+    renderHook(() => useSession('run-1'));
+
+    expect(clientLog).toHaveBeenCalledWith('sse.connect', { runId: 'run-1' });
+
+    act(() => {
+      FakeEventSource.instances[0].onopen?.();
+    });
+    expect(clientLog).toHaveBeenCalledWith('sse.open', { runId: 'run-1' });
+
+    act(() => {
+      FakeEventSource.instances[0].onerror?.();
+    });
+    expect(clientLog).toHaveBeenCalledWith(
+      'sse.error',
+      expect.objectContaining({ runId: 'run-1', retryCount: 0 })
+    );
+  });
+
+  test('切换到另一个 runId 时立即清空上一会话实时消息,避免 A 的指令串到 B', () => {
+    const { result, rerender } = renderHook(
+      ({ id }) => useSession(id),
+      { initialProps: { id: 'run-A' } }
+    );
+
+    act(() => {
+      FakeEventSource.instances[0].onopen?.();
+      FakeEventSource.instances[0].emit({ type: 'user_message', text: 'A 的指令' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+    });
+
+    expect(result.current.messages[0]?.blocks).toEqual([
+      { kind: 'text', text: 'A 的指令' },
+    ]);
+    expect(result.current.status).toBe('executing');
+
+    act(() => {
+      rerender({ id: 'run-B' });
+    });
+
+    expect(result.current.messages).toEqual([]);
+    expect(result.current.pending).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.status).toBe('idle');
+    expect(result.current.model).toBeNull();
+    expect(result.current.connected).toBe(false);
+  });
+
   test('user_message 事件在实时流里追加一条 user 消息', () => {
     const { result } = renderHook(() => useSession('run-1'));
 
@@ -313,6 +367,54 @@ describe('useSession 执行状态与模型信息', () => {
       FakeEventSource.instances[0].emit({ type: 'status', state: 'idle' } as ServerEvent);
     });
     expect(result.current.status).toBe('idle');
+  });
+
+  test('waiting 之后若收到 executing，说明待答项已被处理，pending 卡片应清空', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({
+        type: 'prompt',
+        prompt: {
+          kind: 'permission',
+          id: 'perm-1',
+          toolName: 'Read',
+          title: 'Claude wants to use Read',
+          detail: 'read file',
+        },
+      } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'waiting' } as ServerEvent);
+    });
+
+    expect(result.current.pending).toMatchObject({
+      kind: 'permission',
+      id: 'perm-1',
+    });
+    expect(result.current.status).toBe('waiting');
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+    });
+
+    expect(result.current.status).toBe('executing');
+    expect(result.current.pending).toBeNull();
+  });
+
+  test('error 事件应立刻反馈错误并退出 executing,避免模型 API 失败后一直执行中', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+    });
+    expect(result.current.status).toBe('executing');
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'error', message: 'model api failed' } as ServerEvent);
+    });
+
+    expect(result.current.error).toBe('model api failed');
+    expect(result.current.status).toBe('idle');
+    expect(result.current.pending).toBeNull();
   });
 
   test('run_info 事件记录 model(effort 缺失)', () => {

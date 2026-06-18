@@ -1,5 +1,5 @@
 import { vi, beforeEach, afterEach } from 'vitest';
-import { closeSession, startNew, listActiveAgents, closeAgent } from './chatApi';
+import { closeSession, startNew, listActiveAgents, closeAgent, heartbeatSession, respond } from './chatApi';
 
 beforeEach(() => {
   Storage.prototype.getItem = vi.fn(() => 'tok');
@@ -93,5 +93,55 @@ describe('active agents', () => {
       method: 'POST',
       headers: { Authorization: 'Bearer tok' },
     }));
+  });
+
+  test('heartbeatSession sends POST and returns lease response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        runId: 'run-9',
+        status: 'idle',
+        attached: true,
+        leaseExpiresAt: 123,
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await heartbeatSession('run-9');
+
+    expect(result).toMatchObject({
+      ok: true,
+      runId: 'run-9',
+      status: 'idle',
+      attached: true,
+      leaseExpiresAt: 123,
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/run-9/heartbeat', expect.objectContaining({
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok' },
+    }));
+  });
+});
+
+describe('respond', () => {
+  test('后端返回 ok:false 时抛出错误，避免前端把失效待答项当成已处理', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      respond('run-1', { kind: 'permission', id: 'perm-1', decision: 'allow' })
+    ).rejects.toThrow(/pending/i);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/run-1/respond',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer tok' }),
+      })
+    );
   });
 });

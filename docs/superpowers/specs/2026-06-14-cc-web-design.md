@@ -136,13 +136,13 @@ MVP:内存全文扫描,关键字匹配消息内容。数据量大后再考虑建
 | `DELETE` | `/api/projects/:projectId/sessions/:sessionId` | 删除历史会话（已实现） |
 | `POST` | `/api/sessions/new` | 新建对话，返回 `{runId}` |
 | `POST` | `/api/sessions/:sessionId/continue` | 续聊（runId 复用 sessionId），需带 `projectId` 定位原工作目录 |
-| `GET` | `/api/sessions/active` | 列出当前活跃 agent（run）及并发上限 |
+| `GET` | `/api/sessions/active` | 列出当前后台运行（SDK run）及并发上限 |
 | `GET` | `/api/sessions/:runId` | 探测某活跃 run 是否仍在后端池中（前端恢复旧连接前先判活） |
 | `GET` | `/api/sessions/:runId/stream` | SSE:流式接收回复 + 待答事项（**重连整段重放全量事件日志**） |
 | `POST` | `/api/sessions/:runId/message` | 发送用户消息（`text` + 可选 `attachments`） |
 | `POST` | `/api/sessions/:runId/respond` | 提交答案（权限 / 选项 / 计划），`interactionId` 在请求体中 |
 | `POST` | `/api/sessions/:runId/abort` | 停止当前轮次执行，但保留会话以便后续继续输入 |
-| `POST` | `/api/sessions/:runId/close` | 强制关闭指定活跃 agent |
+| `POST` | `/api/sessions/:runId/close` | 强制关闭指定后台运行 |
 | `DELETE` | `/api/sessions/:runId` | 释放会话（忙碌保活 / 空闲回收） |
 | `POST` | `/api/uploads` | 上传附件，返回 `{ref, filename}` |
 | `GET` | `/api/image?path=` | 读取粘贴图片（限 `CLAUDE_IMAGE_CACHE_DIR` 下） |
@@ -179,9 +179,9 @@ UI 原型已在浏览器中确认。原型文件存于 `.superpowers/brainstorm/
 
 - **可拖拽侧栏**:侧栏与主区之间有拖拽手柄,可调宽度。
 - **可折叠侧栏**:顶部「«」按钮收起整个侧栏(主区全宽),收起后留「»」按钮可展开。
-- **侧栏内容**:自定义目录新建 + 活跃 agent 列表 + 按项目分组的 session 列表(标题 + 时间)。
+- **侧栏内容**:快捷新建 + 后台运行列表 + 按项目分组的 session 列表(标题 + 时间)。顶部“新建会话”优先使用第一个已知项目路径；项目标题也提供“快速新建”。
 - **项目级快速新建**:每个项目标题右侧提供「快速新建」，直接复用该项目的真实 `path` 新起一个会话，不必再次手输目录。
-- **活跃 agent 列表**:显示当前 `SessionManager` 中仍活着的 run 数量、状态（`idle / executing / waiting`）、快速切换与关闭入口。
+- **后台 agent 列表**:显示当前 `SessionManager` 中仍活着并占用并发槽的 run 数量、状态（`idle / executing / waiting`）、快速切换与关闭入口；它不等同于“当前浏览器已连接”，连接状态由顶部状态栏表达。
 - **附件 / 图片上传**:输入区左侧 📎(附件)、🖼️(图片)按钮,已选文件在输入框上方显示缩略图预览。
 
 ### 手机端布局
@@ -216,8 +216,10 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 | `PORT` | `3000`（dev 用 3002） | 服务端口 |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | 历史记录根目录 |
 | `CLAUDE_IMAGE_CACHE_DIR` | `<projects 同级>/image-cache` | 粘贴图片缓存目录 |
-| `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 活跃会话空闲超时（毫秒）；执行中/有产出则续期 |
-| `MAX_CONCURRENT_SESSIONS` | `3` | 同时运行的活跃 agent 上限；超限则新建/续聊返回 409，前端提示先关闭已有 agent |
+| `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 无浏览器接管租约时的空闲兜底回收时间（毫秒）；执行中/有产出则续期 |
+| `SESSION_HEARTBEAT_TTL_MS` | `45000`（45 秒） | 浏览器 heartbeat 租约有效期；前端每 15 秒对本地 activeRuns 去重保活 |
+| `SESSION_ORPHAN_IDLE_TIMEOUT_MS` | `60000`（60 秒） | heartbeat 停止后，空闲后台运行继续保留的宽限期，过期后回收 |
+| `MAX_CONCURRENT_SESSIONS` | `3` | 同时运行的后台运行上限；超限则新建/续聊返回 409，前端提示先关闭已有后台运行 |
 | `UPLOADS_DIR` | `<cwd>/uploads` | 附件上传保存目录 |
 
 ## 8. 生命周期管理与错误处理
@@ -258,9 +260,10 @@ Claude 抛出交互事件时,在对话流中渲染为卡片:
 - **子进程崩溃/退出**：SSE 推 `error` 事件，前端显示「会话中断」，可重试
 - **空闲超时**（3 分钟无事件产出）：自动回收会话，释放资源
 - **并发上限**：限制同时运行的会话数（`MAX_CONCURRENT_SESSIONS`），防止资源耗尽
-- **活跃 agent 真相源**：前端展示的“活跃 agent”以 `GET /api/sessions/active` 为准，而不是只依赖本地 `activeRuns`
+- **后台运行真相源**：前端展示的“后台运行”以 `GET /api/sessions/active` 为准，而不是只依赖本地 `activeRuns`
+- **后端列表补全接管**：当前选中历史会话若已存在于 `GET /api/sessions/active` 返回的后台 agent 列表中，前端会自动挂接该 `runId` 并补写 `activeRuns`
 - **前端**：续聊 SSE 断线自动重连，重连后整段重放事件日志恢复状态；网络/发送失败给明确提示
-- **恢复旧 run**：前端恢复持久化 `activeRuns` 时，会先调用 `GET /api/sessions/:runId` 做快速探活；若 run 已失效，则立即清理本地记录并回到“在此继续”，避免卡在慢重连里
+- **恢复旧 run**：前端恢复持久化 `activeRuns` 时，会先调用 `GET /api/sessions/:runId` 做快速探活；若 run 已失效，则立即清理本地记录并回到“接管/继续”，避免卡在慢重连里
 - **浏览 SSE**：`ApiClient` 显式持有 `/api/events` 连接，并在退出登录时通过 `disconnect()` 主动关闭，避免旧连接滞留
 - **静态 token 失效**：浏览态请求若收到 `401`，前端会自动清理本地登录态并退回登录页，避免界面停留在“已登录但所有请求都失败”的假状态
 

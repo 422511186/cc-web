@@ -48,6 +48,51 @@ function app() {
 }
 
 describe("chat routes", () => {
+  it("POST /debug/client-log 记录前端诊断事件并返回 ok", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    const res = await request(app())
+      .post("/api/debug/client-log")
+      .send({
+        event: "app.session-select",
+        runId: "run-1",
+        sessionId: "s1",
+        detail: { source: "history-row" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[cc-web:client]",
+      expect.objectContaining({
+        event: "app.session-select",
+        runId: "run-1",
+        sessionId: "s1",
+      })
+    );
+  });
+
+  it("GET /debug/logs 返回最近的诊断日志，便于浏览器操作后排查", async () => {
+    const a = app();
+
+    await request(a)
+      .post("/api/debug/client-log")
+      .send({ event: "app.session-select", runId: "run-1" });
+
+    const res = await request(a).get("/api/debug/logs");
+
+    expect(res.status).toBe(200);
+    expect(res.body.logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "client",
+          event: "app.session-select",
+          runId: "run-1",
+        }),
+      ])
+    );
+  });
+
   it.skip("P2-B3: 会话结束时有 SSE 连接，宽限计时器场景较难用 supertest 测试", async () => {
     // P2-B3 问题：会话结束时正好有 SSE 连接，不启动宽限计时器；
     // 若后续连接断开但未触发 onClose（网络闪断），hub 永久驻留。
@@ -76,6 +121,59 @@ describe("chat routes", () => {
     expect(res.status).toBe(404);
   });
 
+  it("POST /sessions/:runId/respond 当待答项已失效时返回 ok:false", async () => {
+    const a = app();
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const res = await request(a)
+      .post(`/api/sessions/${runId}/respond`)
+      .send({ kind: "permission", id: "missing-prompt", decision: "allow" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: false });
+  });
+
+  it("POST /sessions/:runId/message forwards uploaded attachment refs as uploadsDir file paths", async () => {
+    const received: string[] = [];
+    const client: SdkClient = {
+      start: async function* (params) {
+        for await (const msg of params.prompt) {
+          received.push(String(msg.message.content));
+          break;
+        }
+      },
+    };
+    const mgr = new SessionManager({
+      client,
+      permissionMode: "default",
+      maxConcurrent: 4,
+      idleTimeoutMs: 60_000,
+    });
+    const a = express();
+    a.use(express.json());
+    a.use("/api", createChatRouter(mgr, undefined, undefined, "C:/uploads"));
+
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const res = await request(a)
+      .post(`/api/sessions/${runId}/message`)
+      .send({
+        text: "请看附件",
+        attachments: ["abc.png", "../escape.pdf", "nested/report.txt"],
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(res.status).toBe(200);
+    expect(received[0]).toContain("请看附件");
+    expect(received[0]).toContain("C:\\uploads\\abc.png");
+    expect(received[0]).toContain("C:\\uploads\\escape.pdf");
+    expect(received[0]).toContain("C:\\uploads\\report.txt");
+    expect(received[0]).not.toContain("..");
+  });
+
   it("GET /sessions/:runId 返回 run 存活状态,供前端快速探活", async () => {
     const a = app();
     const startRes = await request(a).post("/api/sessions/new").send({});
@@ -86,6 +184,27 @@ describe("chat routes", () => {
     expect(live.body).toEqual({ runId, active: true });
 
     const missing = await request(a).get("/api/sessions/ghost");
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toBe("session not found");
+  });
+
+  it("POST /sessions/:runId/heartbeat refreshes browser lease", async () => {
+    const a = app();
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const res = await request(a).post(`/api/sessions/${runId}/heartbeat`).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      runId,
+      status: "idle",
+      attached: true,
+    });
+    expect(typeof res.body.leaseExpiresAt).toBe("number");
+
+    const missing = await request(a).post("/api/sessions/ghost/heartbeat").send({});
     expect(missing.status).toBe(404);
     expect(missing.body.error).toBe("session not found");
   });

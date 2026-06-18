@@ -10,11 +10,12 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
   private waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
   private closed = false;
 
-  push(text: string): void {
+  push(text: string, attachments: string[] = []): void {
     if (this.closed) return;
+    const content = formatMessageContent(text, attachments);
     const msg = {
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
     } as SDKUserMessage;
     if (this.waiting) {
@@ -58,4 +59,14 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
       },
     };
   }
+}
+
+function formatMessageContent(text: string, attachments: string[]): string {
+  if (attachments.length === 0) return text;
+  return [
+    text,
+    "",
+    "Attached files:",
+    ...attachments.map((filePath) => `- ${filePath}`),
+  ].join("\n");
 }

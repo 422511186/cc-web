@@ -1052,6 +1052,7 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
 
       <div className="conversation-messages" style={{
         flex: 1,
+        minHeight: 0,
         backgroundColor: 'transparent',
       }}>
         <List

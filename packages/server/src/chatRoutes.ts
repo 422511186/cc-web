@@ -27,6 +27,7 @@ const HUB_GRACE_MS = 60_000;
 
 /** Hub.log 最大事件数,防止长会话内存泄漏 */
 const MAX_LOG_EVENTS = 10_000;
+const MAX_DEBUG_LOGS = 500;
 
 /** 把 (projectId, sessionId) 解析成 session 的真实工作目录,供 SDK resume 用 */
 export type CwdResolver = (
@@ -37,9 +38,25 @@ export type CwdResolver = (
 export function createChatRouter(
   mgr: SessionManager,
   resolveCwd?: CwdResolver,
-  dirExists?: (cwd: string) => boolean
+  dirExists?: (cwd: string) => boolean,
+  uploadsDir?: string
 ): Router {
   const hubs = new Map<string, Hub>();
+  const debugLogs: Array<Record<string, unknown>> = [];
+
+  function recordDebug(source: "client" | "server", payload: Record<string, unknown>): void {
+    const entry = {
+      seq: debugLogs.length > 0 ? Number(debugLogs[debugLogs.length - 1].seq) + 1 : 1,
+      source,
+      at: Date.now(),
+      ...payload,
+    };
+    debugLogs.push(entry);
+    if (debugLogs.length > MAX_DEBUG_LOGS) {
+      debugLogs.splice(0, debugLogs.length - MAX_DEBUG_LOGS);
+    }
+    console.info(source === "client" ? "[cc-web:client]" : "[cc-web:agent]", payload);
+  }
 
   function hubFor(runId: string): Hub {
     let hub = hubs.get(runId);
@@ -58,6 +75,16 @@ export function createChatRouter(
     if (!hub) return;
     if (hub.graceTimer) clearTimeout(hub.graceTimer);
     hubs.delete(runId);
+  }
+
+  function resolveAttachmentRefs(attachments: unknown): string[] {
+    if (!Array.isArray(attachments)) return [];
+    return attachments
+      .filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0)
+      .map((ref) => {
+        const filename = path.basename(ref);
+        return uploadsDir ? path.join(uploadsDir, filename) : filename;
+      });
   }
 
   /** 会话事件回调:始终追加到全量日志(供重连重放),有 SSE 连着则同时实时推送 */
@@ -90,6 +117,34 @@ export function createChatRouter(
 
   const router = Router();
 
+  router.post("/debug/client-log", (req, res) => {
+    const body = req.body as {
+      event?: unknown;
+      runId?: unknown;
+      sessionId?: unknown;
+      projectId?: unknown;
+      detail?: unknown;
+      ts?: unknown;
+    };
+    recordDebug("client", {
+      event: typeof body.event === "string" ? body.event : "unknown",
+      runId: typeof body.runId === "string" ? body.runId : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      projectId: typeof body.projectId === "string" ? body.projectId : undefined,
+      detail: body.detail,
+      ts: typeof body.ts === "number" ? body.ts : Date.now(),
+    });
+    res.json({ ok: true });
+  });
+
+  router.get("/debug/logs", (req, res) => {
+    const limitRaw = Number(req.query.limit ?? 200);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(Math.floor(limitRaw), MAX_DEBUG_LOGS)
+      : 200;
+    res.json({ logs: debugLogs.slice(-limit) });
+  });
+
   // 新建对话
   router.post("/sessions/new", (req, res) => {
     try {
@@ -111,6 +166,12 @@ export function createChatRouter(
       }
 
       const runId = mgr.startNew((id) => makeOnEvent(id), cwd);
+      recordDebug("server", {
+        event: "server.start-new",
+        runId,
+        cwd,
+        activeCount: mgr.listActiveAgents().length,
+      });
       const body: StartSessionResponse = { runId };
       res.json(body);
     } catch (error) {
@@ -140,6 +201,14 @@ export function createChatRouter(
       // 避免新连接整段重放时重放出旧 closed 导致前端误判已结束/卡连接中。
       resetHub(sessionId);
       const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd, projectId);
+      recordDebug("server", {
+        event: "server.start-continue",
+        runId,
+        sessionId,
+        projectId,
+        cwd,
+        activeCount: mgr.listActiveAgents().length,
+      });
       const body: StartSessionResponse = { runId };
       res.json(body);
     } catch (error) {
@@ -153,8 +222,20 @@ export function createChatRouter(
   });
 
   router.get("/sessions/active", (_req, res) => {
+    const agents = mgr.listActiveAgents();
+    recordDebug("server", {
+      event: "server.active-list",
+      count: agents.length,
+      agents: agents.map((agent) => ({
+        runId: agent.runId,
+        sessionId: agent.sessionId,
+        projectId: agent.projectId,
+        status: agent.status,
+        attached: agent.attached,
+      })),
+    });
     res.json({
-      agents: mgr.listActiveAgents(),
+      agents,
       maxConcurrent: mgr.getMaxConcurrent(),
     });
   });
@@ -169,6 +250,21 @@ export function createChatRouter(
     res.json({ runId, active: true });
   });
 
+  router.post("/sessions/:runId/heartbeat", (req, res) => {
+    const heartbeat = mgr.heartbeat(req.params.runId);
+    if (!heartbeat) {
+      res.status(404).json({ error: "session not found" });
+      return;
+    }
+    recordDebug("server", {
+      event: "server.heartbeat",
+      runId: req.params.runId,
+      status: heartbeat.status,
+      leaseExpiresAt: heartbeat.leaseExpiresAt,
+    });
+    res.json({ ok: true, ...heartbeat });
+  });
+
   // 发消息
   router.post("/sessions/:runId/message", (req, res) => {
     const runId = req.params.runId;
@@ -177,8 +273,8 @@ export function createChatRouter(
       res.status(404).json({ error: "session not found" });
       return;
     }
-    const { text } = req.body as SendMessageRequest;
-    session.send(text);
+    const { text, attachments } = req.body as SendMessageRequest;
+    session.send(text, resolveAttachmentRefs(attachments));
     mgr.touch(runId);
     res.json({ ok: true });
   });
@@ -194,6 +290,13 @@ export function createChatRouter(
     const answer = req.body as PromptAnswer;
     const ok = session.answer(answer);
     mgr.touch(runId);
+    recordDebug("server", {
+      event: "server.respond",
+      runId,
+      answerId: answer.id,
+      kind: answer.kind,
+      ok,
+    });
     res.json({ ok });
   });
 
@@ -243,6 +346,13 @@ export function createChatRouter(
     }
     const channel = new SseChannel(res);
     hub.channel = channel;
+    recordDebug("server", {
+      event: "server.stream-open",
+      runId,
+      replayCount: hub.log.length,
+      active: Boolean(mgr.get(runId)),
+      closed: hub.closed,
+    });
     // 整段重放全量日志(支持切走再切回的重连),日志不清空
     for (const event of hub.log) channel.send(event);
 
@@ -250,6 +360,13 @@ export function createChatRouter(
     channel.onClose(() => {
       clearInterval(heartbeat);
       if (hub.channel === channel) hub.channel = null;
+      recordDebug("server", {
+        event: "server.stream-close",
+        runId,
+        replayCount: hub.log.length,
+        active: Boolean(mgr.get(runId)),
+        closed: hub.closed,
+      });
       // 会话已结束且无人再连接:启动宽限清理,留出重连窗口后回收 hub
       if (hub.closed && !hub.channel && !hub.graceTimer) {
         hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);

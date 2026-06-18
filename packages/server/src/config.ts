@@ -9,6 +9,8 @@ export interface Config {
   permissionMode: "default" | "acceptEdits" | "bypassPermissions";
   // ── 计划二新增:SDK 会话相关 ──
   idleTimeoutMs: number;
+  heartbeatTtlMs: number;
+  orphanIdleTimeoutMs: number;
   maxConcurrent: number;
   uploadsDir: string;
 }
@@ -32,6 +34,12 @@ export function loadConfig(): Config {
   const idleTimeoutMs = process.env.SESSION_IDLE_TIMEOUT_MS
     ? Number(process.env.SESSION_IDLE_TIMEOUT_MS)
     : 3 * 60 * 1000;
+  const heartbeatTtlMs = process.env.SESSION_HEARTBEAT_TTL_MS
+    ? Number(process.env.SESSION_HEARTBEAT_TTL_MS)
+    : 45 * 1000;
+  const orphanIdleTimeoutMs = process.env.SESSION_ORPHAN_IDLE_TIMEOUT_MS
+    ? Number(process.env.SESSION_ORPHAN_IDLE_TIMEOUT_MS)
+    : 60 * 1000;
   const maxConcurrent = process.env.MAX_CONCURRENT_SESSIONS
     ? Number(process.env.MAX_CONCURRENT_SESSIONS)
     : 3;
@@ -50,6 +58,14 @@ export function loadConfig(): Config {
   // Validate SESSION_IDLE_TIMEOUT_MS: must be positive and finite
   if (idleTimeoutMs <= 0 || !isFinite(idleTimeoutMs)) {
     throw new Error('SESSION_IDLE_TIMEOUT_MS must be positive and finite');
+  }
+
+  if (heartbeatTtlMs <= 0 || !isFinite(heartbeatTtlMs)) {
+    throw new Error('SESSION_HEARTBEAT_TTL_MS must be positive and finite');
+  }
+
+  if (orphanIdleTimeoutMs <= 0 || !isFinite(orphanIdleTimeoutMs)) {
+    throw new Error('SESSION_ORPHAN_IDLE_TIMEOUT_MS must be positive and finite');
   }
 
   if (!VALID_PERMISSION_MODES.has(permissionMode)) {
@@ -71,6 +87,8 @@ export function loadConfig(): Config {
     imageCacheDir,
     permissionMode,
     idleTimeoutMs,
+    heartbeatTtlMs,
+    orphanIdleTimeoutMs,
     maxConcurrent,
     uploadsDir,
   };

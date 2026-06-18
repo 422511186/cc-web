@@ -6,11 +6,13 @@ interface SidebarProps {
   apiClient: ApiClient;
   onSessionSelect: (projectId: string, sessionId: string) => void;
   selectedSessionId?: string;
-  onNewSession?: (cwd: string) => void;
+  onNewSession?: () => void;
   /** 项目列表加载完成后上报给父组件(供顶栏展示正确的项目名) */
   onProjectsLoad?: (projects: Project[]) => void;
   activeAgents: ActiveAgent[];
   maxAgents: number;
+  currentRunId?: string | null;
+  currentRunConnected?: boolean;
   onActiveAgentSelect: (agent: ActiveAgent) => void;
   onActiveAgentClose: (agent: ActiveAgent) => void;
   onQuickNewSession?: (cwd: string) => void;
@@ -24,6 +26,8 @@ export function Sidebar({
   onProjectsLoad,
   activeAgents = [],
   maxAgents = 3,
+  currentRunId,
+  currentRunConnected = false,
   onActiveAgentSelect = () => {},
   onActiveAgentClose = () => {},
   onQuickNewSession,
@@ -33,13 +37,7 @@ export function Sidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
-  const handleNewClick = () => {
-    const cwd = window.prompt('请输入工作目录路径（留空则使用默认）:', '');
-    if (cwd === null) return; // 用户取消
-    if (onNewSession) {
-      onNewSession(cwd || '');
-    }
-  };
+  const handleNewClick = () => onNewSession?.();
 
   useEffect(() => {
     loadProjects();
@@ -116,6 +114,41 @@ export function Sidebar({
 
   const isLimited = activeAgents.length >= maxAgents;
 
+  const statusLabel = (agent: ActiveAgent) => {
+    if (agent.runId === currentRunId) {
+      return currentRunConnected ? '已接管' : '接管中';
+    }
+    const { status } = agent;
+    if (status === 'executing') return '执行中';
+    if (status === 'waiting') return '等待你回答';
+    return '空闲';
+  };
+
+  const activeRunForSession = (projectId: string, sessionId: string) =>
+    activeAgents.find(
+      (agent) =>
+        agent.kind === 'continue' &&
+        agent.projectId === projectId &&
+        agent.sessionId === sessionId
+    );
+
+  const projectNameFor = (projectId?: string) =>
+    projects.find((project) => project.id === projectId)?.name ?? projectId ?? '未知项目';
+
+  const activeAgentTitle = (agent: ActiveAgent) => {
+    if (agent.kind === 'continue') return projectNameFor(agent.projectId);
+    if (agent.cwd) {
+      const normalized = agent.cwd.replace(/\\/g, '/');
+      return normalized.split('/').filter(Boolean).pop() ?? agent.cwd;
+    }
+    return '新建会话';
+  };
+
+  const activeAgentMeta = (agent: ActiveAgent) => {
+    if (agent.kind === 'continue') return agent.sessionId ?? agent.runId;
+    return agent.cwd ?? agent.runId;
+  };
+
   if (loading) {
     return <div style={{ padding: '1rem' }}>Loading...</div>;
   }
@@ -149,75 +182,106 @@ export function Sidebar({
             transition: 'background-color 0.2s',
             marginBottom: '0.5rem',
           }}
-        >
+          >
           + 新建会话
-        </button>
-        <button
-          onClick={() => onQuickNewSession?.(projects[0]?.path ?? '')}
-          disabled={isLimited || !projects[0]}
-          style={{
-            width: '100%',
-            padding: '0.625rem',
-            backgroundColor: isLimited || !projects[0] ? '#eaeef2' : '#fff',
-            color: isLimited || !projects[0] ? '#6a737d' : '#1976d2',
-            border: '1px solid #1976d2',
-            borderRadius: '6px',
-            cursor: isLimited || !projects[0] ? 'not-allowed' : 'pointer',
-            fontSize: '0.875rem',
-            fontWeight: 500,
-            transition: 'background-color 0.2s',
-          }}
-        >
-          快速新建当前项目
         </button>
       </div>
 
       <div style={{ padding: '0.75rem 1.25rem', borderBottom: '1px solid #e8e8e8', backgroundColor: '#fafafa' }}>
         <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
-          活跃 Agents {activeAgents.length}/{maxAgents}
+          后台运行中 {activeAgents.length}/{maxAgents}
         </div>
         {activeAgents.length === 0 ? (
-          <div style={{ fontSize: '0.8rem', color: '#999' }}>暂无活跃 agent</div>
+          <div style={{ fontSize: '0.8rem', color: '#999' }}>暂无后台运行</div>
         ) : (
-          activeAgents.map((agent) => (
-            <div key={agent.runId} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          activeAgents.map((agent) => {
+            const title = activeAgentTitle(agent);
+            const meta = activeAgentMeta(agent);
+            const label = statusLabel(agent);
+            const statusColor =
+              label === '执行中' ? '#9a6700' :
+              label === '等待你回答' ? '#0969da' :
+              label === '已接管' ? '#1f883d' :
+              label === '接管中' ? '#8250df' :
+              '#57606a';
+            return (
+            <div key={agent.runId} style={{
+              position: 'relative',
+              marginBottom: '0.625rem',
+              border: '1px solid #d8dee4',
+              borderRadius: 8,
+              background: '#fff',
+              overflow: 'hidden',
+            }}>
               <button
+                aria-label={`接管后台运行 ${title}`}
                 onClick={() => onActiveAgentSelect(agent)}
                 style={{
-                  flex: 1,
+                  width: '100%',
                   textAlign: 'left',
-                  padding: '0.5rem 0.65rem',
-                  borderRadius: 6,
-                  border: '1px solid #d0d7de',
-                  background: '#fff',
+                  padding: '0.7rem 2.3rem 0.7rem 0.8rem',
+                  border: 'none',
+                  background: 'transparent',
                   cursor: 'pointer',
                 }}
               >
-                <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
-                  {agent.kind === 'continue' ? '历史续聊' : '新建会话'} · {agent.status}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem' }}>
+                  <span style={{ fontSize: '0.86rem', fontWeight: 650, color: '#24292f' }}>
+                    {title}
+                  </span>
+                  <span style={{
+                    fontSize: '0.68rem',
+                    padding: '0.08rem 0.38rem',
+                    borderRadius: 999,
+                    color: statusColor,
+                    backgroundColor: `${statusColor}14`,
+                    border: `1px solid ${statusColor}33`,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {label}
+                  </span>
                 </div>
-                <div style={{ fontSize: '0.72rem', color: '#666' }}>{agent.runId}</div>
+                <div style={{
+                  fontSize: '0.72rem',
+                  color: '#6e7781',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {meta}
+                </div>
               </button>
               <button
-                aria-label={`关闭 ${agent.runId}`}
+                aria-label={`关闭后台运行 ${title}`}
                 onClick={() => onActiveAgentClose(agent)}
                 style={{
-                  border: '1px solid #dc3545',
+                  position: 'absolute',
+                  top: '0.55rem',
+                  right: '0.55rem',
+                  width: 26,
+                  height: 26,
+                  border: '1px solid #d8dee4',
                   background: '#fff',
-                  color: '#dc3545',
+                  color: '#57606a',
                   borderRadius: 6,
-                  padding: '0.35rem 0.5rem',
                   cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.9rem',
+                  lineHeight: 1,
                 }}
+                title="关闭后台运行"
               >
-                关
+                ×
               </button>
             </div>
-          ))
+          );
+          })
         )}
         {isLimited && (
           <div style={{ fontSize: '0.8rem', color: '#cf222e' }}>
-            已达上限，请先关闭一个 agent
+            已达后台运行上限，请先关闭一个
           </div>
         )}
       </div>
@@ -257,6 +321,8 @@ export function Sidebar({
                 {project.name}
               </span>
               <button
+                aria-label={`在 ${project.name} 快速新建会话`}
+                title={`在 ${project.name} 快速新建会话`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onQuickNewSession?.(project.path);
@@ -264,44 +330,49 @@ export function Sidebar({
                 disabled={isLimited}
                 style={{
                   marginLeft: 'auto',
-                  padding: '0.25rem 0.5rem',
+                  width: 30,
+                  height: 30,
                   borderRadius: 6,
-                  border: '1px solid #1976d2',
-                  background: isLimited ? '#eaeef2' : '#fff',
-                  color: isLimited ? '#6a737d' : '#1976d2',
+                  border: '1px solid #d0d7de',
+                  background: isLimited ? '#eaeef2' : '#f6f8fa',
+                  color: isLimited ? '#6a737d' : '#0969da',
                   cursor: isLimited ? 'not-allowed' : 'pointer',
-                  fontSize: '0.75rem',
+                  fontSize: '1.05rem',
+                  fontWeight: 700,
+                  lineHeight: 1,
                 }}
               >
-                快速新建
+                +
               </button>
             </div>
 
             {expandedProjects.has(project.id) && sessionsByProject[project.id] && (
               <div style={{ backgroundColor: '#fafafa' }}>
-                {sessionsByProject[project.id].map(session => (
-                  <div
-                    key={session.id}
-                    onClick={() => onSessionSelect(project.id, session.id)}
-                    style={{
-                      padding: '0.75rem 2.5rem 0.75rem 2.75rem', // 右侧增加 padding 给删除按钮留空间
-                      cursor: 'pointer',
-                      position: 'relative',
-                      backgroundColor: selectedSessionId === session.id ? '#e3f2fd' : 'transparent',
-                      borderLeft: selectedSessionId === session.id ? '3px solid #1976d2' : '3px solid transparent',
-                      transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (selectedSessionId !== session.id) {
-                        e.currentTarget.style.backgroundColor = '#f5f5f5';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (selectedSessionId !== session.id) {
-                        e.currentTarget.style.backgroundColor = 'transparent';
-                      }
-                    }}
-                  >
+                {sessionsByProject[project.id].map(session => {
+                  const activeRun = activeRunForSession(project.id, session.id);
+                  return (
+                    <div
+                      key={session.id}
+                      onClick={() => onSessionSelect(project.id, session.id)}
+                      style={{
+                        padding: '0.75rem 2.5rem 0.75rem 2.75rem', // 右侧增加 padding 给删除按钮留空间
+                        cursor: 'pointer',
+                        position: 'relative',
+                        backgroundColor: selectedSessionId === session.id ? '#e3f2fd' : 'transparent',
+                        borderLeft: selectedSessionId === session.id ? '3px solid #1976d2' : '3px solid transparent',
+                        transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedSessionId !== session.id) {
+                          e.currentTarget.style.backgroundColor = '#f5f5f5';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (selectedSessionId !== session.id) {
+                          e.currentTarget.style.backgroundColor = 'transparent';
+                        }
+                      }}
+                    >
                     <div style={{
                       fontSize: '0.875rem',
                       marginBottom: '0.375rem',
@@ -322,6 +393,15 @@ export function Sidebar({
                         month: '2-digit',
                         day: '2-digit',
                       })}
+                      {activeRun && (
+                        <span style={{
+                          marginLeft: '0.5rem',
+                          color: '#0969da',
+                          fontWeight: 600,
+                        }}>
+                          后台运行
+                        </span>
+                      )}
                     </div>
                     <button
                       aria-label="删除会话"
@@ -363,7 +443,8 @@ export function Sidebar({
                       ✕
                     </button>
                   </div>
-                ))}
+                );
+              })}
               </div>
             )}
           </div>

@@ -15,6 +15,8 @@ export class SseChannel {
     });
     // 立即刷出头,前端 EventSource 才会进入 open
     res.flushHeaders?.();
+    // 立即写入一帧注释,避免浏览器等到下一次 heartbeat 才触发 open。
+    this.res.write(`: connected\n\n`);
   }
 
   send(event: ServerEvent): void {

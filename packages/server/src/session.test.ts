@@ -55,6 +55,29 @@ describe("Session", () => {
     await done;
   });
 
+  it("SDK 连接失败时应结束当前执行态并上报 idle 状态", async () => {
+    const client = fakeClient(async function* (params) {
+      for await (const _msg of params.prompt) {
+        throw new Error("model connection failed");
+      }
+    });
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+
+    const done = session.runToCompletion();
+    session.send("go");
+    await done;
+
+    expect(session.isBusy()).toBe(false);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: "error", message: "model connection failed" },
+        { type: "turn_end", isError: true },
+        { type: "status", state: "idle" },
+      ])
+    );
+  });
+
   it("isBusy:有待答项(等用户回答)时为 true", async () => {
     const client = fakeClient(async function* (params) {
       await params.canUseTool("Bash", { command: "x" }, { toolUseID: "t1" });

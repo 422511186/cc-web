@@ -6,11 +6,12 @@ import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
 import { useSession } from './useSession';
-import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent } from './chatApi';
+import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession } from './chatApi';
 import { createApiClient } from './api';
 import type { ApiClient } from './api';
 import type { ActiveAgent, PromptAnswer, PendingPrompt, Project } from '@cc-web/shared';
 import type { LiveMessage } from './useSession';
+import { clientLog } from './diagnostics';
 import { QuestionCard } from './components/QuestionCard';
 import { PermissionCard } from './components/PermissionCard';
 import { PlanCard } from './components/PlanCard';
@@ -24,6 +25,13 @@ function isUnauthorizedError(error: unknown): boolean {
   return error instanceof Error && /\b401\b/.test(error.message);
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    return (error as { status?: unknown }).status === 404;
+  }
+  return error instanceof Error && /\b404\b/.test(error.message);
+}
+
 /** 纯新建会话视图:无历史 session,只展示实时流式消息与待答卡片 */
 function NewSessionView({ liveMessages, pending, onAnswer }: {
   liveMessages: LiveMessage[];
@@ -31,7 +39,10 @@ function NewSessionView({ liveMessages, pending, onAnswer }: {
   onAnswer: (a: PromptAnswer) => void;
 }) {
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: '1.5rem' }}>
+    <div
+      data-testid="new-session-view"
+      style={{ height: '100%', overflow: 'auto', padding: '1.5rem', backgroundColor: '#fff' }}
+    >
       <div style={{ maxWidth: 900, margin: '0 auto' }}>
         {liveMessages.map((m, i) => {
           if (m.blocks.length === 0 && !m.streaming) return null;
@@ -88,6 +99,190 @@ function NewSessionView({ liveMessages, pending, onAnswer }: {
   );
 }
 
+function NewSessionDialog({
+  open,
+  projects,
+  onCreate,
+  onClose,
+}: {
+  open: boolean;
+  projects: Project[];
+  onCreate: (cwd: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [cwd, setCwd] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) setCwd('');
+  }, [open]);
+
+  if (!open) return null;
+
+  async function createWith(path: string) {
+    const normalized = path.trim();
+    if (!normalized) return;
+    setBusy(true);
+    try {
+      await onCreate(normalized);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="presentation"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 2000,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '1rem',
+      }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <form
+        role="dialog"
+        aria-label="新建会话"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void createWith(cwd);
+        }}
+        style={{
+          width: 'min(560px, 100%)',
+          background: '#fff',
+          borderRadius: 8,
+          border: '1px solid #d8dee4',
+          boxShadow: '0 16px 48px rgba(31,35,40,0.18)',
+          padding: '1rem',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.9rem' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '1rem', color: '#24292f' }}>新建会话</div>
+            <div style={{ color: '#6e7781', fontSize: '0.82rem', marginTop: '0.2rem' }}>
+              选择已有项目，或输入一个工作目录路径。
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭新建会话"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              border: '1px solid #d8dee4',
+              borderRadius: 6,
+              background: '#fff',
+              color: '#57606a',
+              cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {projects.length > 0 && (
+          <div style={{ marginBottom: '0.9rem' }}>
+            <div style={{ fontSize: '0.78rem', color: '#6e7781', marginBottom: '0.4rem', fontWeight: 600 }}>
+              已有项目
+            </div>
+            <div style={{ display: 'grid', gap: '0.45rem', maxHeight: 180, overflow: 'auto' }}>
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void createWith(project.path)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '0.62rem 0.7rem',
+                    border: '1px solid #d8dee4',
+                    borderRadius: 6,
+                    background: '#f6f8fa',
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <div style={{ fontWeight: 650, color: '#24292f', marginBottom: '0.18rem' }}>
+                    {project.name}
+                  </div>
+                  <div style={{
+                    color: '#6e7781',
+                    fontSize: '0.76rem',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {project.path}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <label htmlFor="new-session-cwd" style={{ display: 'block', fontSize: '0.78rem', color: '#6e7781', marginBottom: '0.4rem', fontWeight: 600 }}>
+          工作目录路径
+        </label>
+        <input
+          id="new-session-cwd"
+          value={cwd}
+          onChange={(e) => setCwd(e.target.value)}
+          placeholder="例如 C:/Users/huang/workspace/my-project"
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            padding: '0.62rem 0.7rem',
+            border: '1px solid #d8dee4',
+            borderRadius: 6,
+            fontSize: '0.9rem',
+            marginBottom: '0.85rem',
+          }}
+        />
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: '0.5rem 0.9rem',
+              border: '1px solid #d8dee4',
+              borderRadius: 6,
+              background: '#fff',
+              color: '#24292f',
+              cursor: 'pointer',
+            }}
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !cwd.trim()}
+            style={{
+              padding: '0.5rem 0.95rem',
+              border: '1px solid #0969da',
+              borderRadius: 6,
+              background: busy || !cwd.trim() ? '#eaeef2' : '#0969da',
+              color: busy || !cwd.trim() ? '#6a737d' : '#fff',
+              cursor: busy || !cwd.trim() ? 'not-allowed' : 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            创建会话
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function App() {
   const [apiClient, setApiClient] = useState<ApiClient | null>(null);
   const [selectedSession, setSelectedSession] = useState<{
@@ -98,6 +293,7 @@ function App() {
   const [continueError, setContinueError] = useState<string | null>(null);
   const [abortSuccess, setAbortSuccess] = useState(false);
   const [alertDialog, setAlertDialog] = useState<{ title: string; message: string } | null>(null);
+  const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
   // 已加载的项目列表(由 Sidebar 上报),用于把正确的项目名传给 Conversation 顶栏
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
@@ -108,7 +304,7 @@ function App() {
   runIdRef.current = runId;
 
   // 续聊会话的活跃 runId 记录(sessionId → runId)。切走时只释放 SSE 连接、
-  // 后台忙碌会话保活;切回同一会话时据此自动重连接管,无需再点"在此继续"。
+  // 后台忙碌会话保活;切回同一会话时据此自动重连接管,无需再点"接管/继续"。
   const activeRunsRef = useRef<Map<string, string>>(new Map());
   const selectedSessionRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   selectedSessionRef.current = selectedSession;
@@ -157,6 +353,19 @@ function App() {
     persistActiveRuns();
   }, [persistActiveRuns]);
 
+  const forgetActiveRunByRunId = useCallback((staleRunId: string) => {
+    let changed = false;
+    activeRunsRef.current.forEach((activeRunId, sessionId) => {
+      if (activeRunId === staleRunId) {
+        activeRunsRef.current.delete(sessionId);
+        changed = true;
+      }
+    });
+    if (changed) {
+      persistActiveRuns();
+    }
+  }, [persistActiveRuns]);
+
   const restoreActiveRun = useCallback(async (sessionId: string) => {
     const activeRunId = activeRunsRef.current.get(sessionId);
     if (!activeRunId) {
@@ -166,20 +375,23 @@ function App() {
       return;
     }
 
+    // 本地已知的 active run 是用户刚刚接管过的可信状态。切回时先立刻
+    // 打开 SSE 接管，探活只作为异步校验，避免把会话切换卡在一次 HTTP 请求上。
+    if (selectedSessionRef.current?.sessionId === sessionId) {
+      setRunId(activeRunId);
+    }
+
     try {
       const alive = await probeRun(activeRunId);
       if (selectedSessionRef.current?.sessionId !== sessionId) {
         return;
       }
       if (alive) {
-        setRunId(activeRunId);
         return;
       }
     } catch {
-      if (selectedSessionRef.current?.sessionId !== sessionId) {
-        return;
-      }
-      // 探活失败时不阻塞用户操作，先保守回到未连接态
+      // 探活失败不等于 run 已死亡。保持乐观接管，让 SSE 自己完成重连/报错。
+      return;
     }
 
     forgetActiveRun(sessionId);
@@ -193,19 +405,84 @@ function App() {
 
   const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
   const isAgentLimitReached = activeAgents.length >= maxAgents;
+  const currentBackendRun = selectedSession
+    ? activeAgents.find(
+        (agent) =>
+          agent.kind === 'continue' &&
+          agent.sessionId === selectedSession.sessionId &&
+          agent.projectId === selectedSession.projectId
+      )
+    : undefined;
+  const canAttachOrContinue = Boolean(currentBackendRun) || !isAgentLimitReached;
+  const connectionLabel = closed
+    ? '已结束'
+    : runId
+      ? connected
+        ? '已接管'
+        : '连接中…'
+      : currentBackendRun
+        ? '后台运行中'
+        : '未接管';
+
+  const attachActiveAgent = useCallback((agent: ActiveAgent, source = 'active-list') => {
+    clientLog('app.attach-active-agent', {
+      source,
+      runId: agent.runId,
+      kind: agent.kind,
+      sessionId: agent.sessionId ?? undefined,
+      projectId: agent.projectId ?? undefined,
+      status: agent.status,
+    });
+
+    if (agent.kind === 'continue' && agent.sessionId && agent.projectId) {
+      const nextSelection = { projectId: agent.projectId, sessionId: agent.sessionId };
+      selectedSessionRef.current = nextSelection;
+      setSelectedSession(nextSelection);
+      rememberActiveRun(agent.sessionId, agent.runId);
+      setRunId(agent.runId);
+      const params = new URLSearchParams();
+      params.set('project', agent.projectId);
+      params.set('session', agent.sessionId);
+      window.history.pushState({}, '', `?${params.toString()}`);
+      return;
+    }
+
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+    setRunId(agent.runId);
+    window.history.pushState({}, '', window.location.pathname);
+  }, [rememberActiveRun]);
 
   const refreshActiveAgents = useCallback(async () => {
     try {
       const result = await listActiveAgents();
       setActiveAgents(result.agents);
       setMaxAgents(result.maxConcurrent);
+      clientLog('app.active-agents-refreshed', {
+        count: result.agents.length,
+        maxConcurrent: result.maxConcurrent,
+        runIds: result.agents.map((agent) => agent.runId),
+      });
+
+      const currentSelection = selectedSessionRef.current;
+      if (currentSelection && !runIdRef.current) {
+        const matchingAgent = result.agents.find(
+          (agent) =>
+            agent.kind === 'continue' &&
+            agent.sessionId === currentSelection.sessionId &&
+            agent.projectId === currentSelection.projectId
+        );
+        if (matchingAgent) {
+          attachActiveAgent(matchingAgent, 'auto-refresh');
+        }
+      }
     } catch (error) {
       if (isUnauthorizedError(error)) {
         clearAuthState(apiClient);
       }
       // 活跃列表失败不阻塞主流程
     }
-  }, [apiClient, clearAuthState]);
+  }, [apiClient, attachActiveAgent, clearAuthState]);
 
   // 关闭/刷新页面时尽力关掉活跃会话
   useEffect(() => {
@@ -232,6 +509,50 @@ function App() {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [apiClient, refreshActiveAgents]);
+
+  useEffect(() => {
+    if (!apiClient) return;
+    let cancelled = false;
+
+    const heartbeatAll = async () => {
+      const activeRunIds = new Set<string>();
+      activeRunsRef.current.forEach((activeRunId) => {
+        activeRunIds.add(activeRunId);
+      });
+      if (runIdRef.current) {
+        activeRunIds.add(runIdRef.current);
+      }
+      if (activeRunIds.size === 0) return;
+
+      await Promise.all(
+        [...activeRunIds].map(async (activeRunId) => {
+          try {
+            await heartbeatSession(activeRunId);
+          } catch (error) {
+            if (cancelled) return;
+            if (isUnauthorizedError(error)) {
+              clearAuthState(apiClient);
+              return;
+            }
+            if (isNotFoundError(error)) {
+              forgetActiveRunByRunId(activeRunId);
+              if (runIdRef.current === activeRunId) {
+                setRunId(null);
+              }
+            }
+          }
+        })
+      );
+    };
+
+    const timer = window.setInterval(() => {
+      void heartbeatAll();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiClient, clearAuthState, forgetActiveRunByRunId]);
 
   // Restore session from URL on mount
   useEffect(() => {
@@ -274,6 +595,25 @@ function App() {
   };
 
   const handleSessionSelect = (projectId: string, sessionId: string) => {
+    const matchingAgent = activeAgents.find(
+      (agent) =>
+        agent.kind === 'continue' &&
+        agent.projectId === projectId &&
+        agent.sessionId === sessionId
+    );
+    clientLog('app.session-select', {
+      projectId,
+      sessionId,
+      activeCount: activeAgents.length,
+      currentRunId: runIdRef.current,
+      matchedRunId: matchingAgent?.runId,
+    });
+    if (matchingAgent) {
+      setContinueError(null);
+      attachActiveAgent(matchingAgent, 'history-row');
+      return;
+    }
+
     const nextSelection = { projectId, sessionId };
     selectedSessionRef.current = nextSelection;
     setSelectedSession(nextSelection);
@@ -291,10 +631,26 @@ function App() {
   const handleContinue = useCallback(async (sessionId: string, projectId?: string) => {
     setContinueError(null);
     try {
+      const existingRun = activeAgents.find(
+        (agent) =>
+          agent.kind === 'continue' &&
+          agent.sessionId === sessionId &&
+          agent.projectId === projectId
+      );
+      if (existingRun) {
+        clientLog('app.continue-existing-run', {
+          sessionId,
+          projectId,
+          runId: existingRun.runId,
+        });
+        attachActiveAgent(existingRun, 'continue-button');
+        return;
+      }
       if (isAgentLimitReached) {
-        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
+        throw new Error(`已达 ${maxAgents} 个后台运行上限，请先关闭一个`);
       }
       const id = await startContinue(sessionId, projectId);
+      clientLog('app.continue-started', { sessionId, projectId, runId: id });
       rememberActiveRun(sessionId, id); // 记录活跃 runId,供切回/刷新重连
 
       // 锁定历史边界为起跑那刻已加载的历史长度;本轮输出由实时流负责,避免切回重复
@@ -310,37 +666,23 @@ function App() {
       // 原项目目录已删除等情况:续聊不可用,提示用户(历史浏览不受影响)
       setContinueError(e instanceof Error ? e.message : '续聊失败');
     }
-  }, [isAgentLimitReached, maxAgents, rememberActiveRun, refreshActiveAgents]);
+  }, [activeAgents, attachActiveAgent, isAgentLimitReached, maxAgents, rememberActiveRun, refreshActiveAgents]);
 
-  const handleNew = useCallback(async () => {
-    // 弹出目录输入框
-    const cwd = window.prompt('请输入工作目录路径（留空则使用默认）:', '');
-    if (cwd === null) return; // 用户取消
-
-    try {
-      if (isAgentLimitReached) {
-        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
-      }
-      const id = await startNew(cwd || undefined);
-      setRunId(id);
-      setSelectedSession(null);
-      await refreshActiveAgents();
-    } catch (e) {
-      setAlertDialog({
-        title: '新建失败',
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [isAgentLimitReached, maxAgents, refreshActiveAgents]);
+  const handleNew = useCallback(() => {
+    setNewSessionDialogOpen(true);
+  }, []);
 
   const handleNewWithCwd = useCallback(async (cwd: string) => {
     try {
       if (isAgentLimitReached) {
-        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
+        throw new Error(`已达 ${maxAgents} 个后台运行上限，请先关闭一个`);
       }
       const id = await startNew(cwd || undefined);
+      clientLog('app.new-started', { runId: id, cwd: cwd || undefined, source: 'quick' });
       setRunId(id);
       setSelectedSession(null);
+      selectedSessionRef.current = null;
+      window.history.pushState({}, '', window.location.pathname);
       await refreshActiveAgents();
     } catch (e) {
       setAlertDialog({
@@ -363,7 +705,37 @@ function App() {
   const handleAnswer = useCallback(
     async (answer: PromptAnswer) => {
       if (!runId) return;
-      await respond(runId, answer);
+      clientLog('app.respond-click', {
+        runId,
+        promptId: answer.id,
+        kind: answer.kind,
+        decision:
+          answer.kind === 'permission' || answer.kind === 'plan'
+            ? answer.decision
+            : undefined,
+      });
+      try {
+        await respond(runId, answer);
+        clientLog('app.respond-success', {
+          runId,
+          promptId: answer.id,
+          kind: answer.kind,
+        });
+      } catch (e) {
+        clientLog('app.respond-failed', {
+          runId,
+          promptId: answer.id,
+          kind: answer.kind,
+          message: e instanceof Error ? e.message : String(e),
+        });
+        setAlertDialog({
+          title: '操作未生效',
+          message:
+            e instanceof Error
+              ? e.message
+              : '待处理卡片已失效，请刷新当前会话状态后重试',
+        });
+      }
     },
     [runId]
   );
@@ -382,23 +754,8 @@ function App() {
   }, [refreshActiveAgents, runId]);
 
   const handleSelectActiveAgent = useCallback((agent: ActiveAgent) => {
-    if (agent.kind === 'continue' && agent.sessionId && agent.projectId) {
-      const nextSelection = { projectId: agent.projectId, sessionId: agent.sessionId };
-      selectedSessionRef.current = nextSelection;
-      setSelectedSession(nextSelection);
-      setRunId(agent.runId);
-      const params = new URLSearchParams();
-      params.set('project', agent.projectId);
-      params.set('session', agent.sessionId);
-      window.history.pushState({}, '', `?${params.toString()}`);
-      return;
-    }
-
-    setSelectedSession(null);
-    selectedSessionRef.current = null;
-    setRunId(agent.runId);
-    window.history.pushState({}, '', window.location.pathname);
-  }, []);
+    attachActiveAgent(agent, 'active-list');
+  }, [attachActiveAgent]);
 
   const handleCloseActiveAgent = useCallback(async (agent: ActiveAgent) => {
     try {
@@ -458,10 +815,13 @@ function App() {
               apiClient={apiClient!}
               onSessionSelect={handleSessionSelect}
               selectedSessionId={selectedSession?.sessionId}
-              onNewSession={handleNewWithCwd}
+              onNewSession={handleNew}
+              onQuickNewSession={handleNewWithCwd}
               onProjectsLoad={setProjects}
               activeAgents={activeAgents}
               maxAgents={maxAgents}
+              currentRunId={runId}
+              currentRunConnected={connected}
               onActiveAgentSelect={handleSelectActiveAgent}
               onActiveAgentClose={handleCloseActiveAgent}
             />
@@ -546,13 +906,13 @@ function App() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '0.35rem',
-                color: connected ? '#1f883d' : '#999',
+                color: runId && connected ? '#1f883d' : currentBackendRun ? '#0969da' : '#999',
               }}>
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: connected ? '#1f883d' : '#bbb',
+                  backgroundColor: runId && connected ? '#1f883d' : currentBackendRun ? '#0969da' : '#bbb',
                 }} />
-                {connected ? '已连接' : closed ? '已结束' : runId ? '连接中…' : '未连接'}
+                {connectionLabel}
               </span>
               {runId && (
                 <span style={{
@@ -576,28 +936,31 @@ function App() {
               )}
               {liveError && <span style={{ color: '#cf222e' }}>错误: {liveError}</span>}
               {continueError && <span style={{ color: '#cf222e' }}>{continueError}</span>}
-              {!continueError && selectedSession && !runId && isAgentLimitReached && (
-                <span style={{ color: '#cf222e' }}>已达 {maxAgents} 个活跃 agent 上限，请先关闭一个</span>
+              {!continueError && selectedSession && !runId && !currentBackendRun && isAgentLimitReached && (
+                <span style={{ color: '#cf222e' }}>已达 {maxAgents} 个后台运行上限，请先关闭一个</span>
               )}
               {abortSuccess && <span style={{ color: '#1f883d', fontWeight: 500 }}>✓ 已停止</span>}
               <span style={{ flex: 1 }} />
               {selectedSession && !runId && !continueError && (
                 <button
-                  disabled={isAgentLimitReached}
+                  disabled={!canAttachOrContinue}
                   onClick={() => handleContinue(selectedSession.sessionId, selectedSession.projectId)}
                   style={{
                     padding: '0.35rem 0.9rem', borderRadius: 6, border: '1px solid #1976d2',
-                    background: isAgentLimitReached ? '#eaeef2' : '#fff',
-                    color: isAgentLimitReached ? '#6a737d' : '#1976d2',
-                    cursor: isAgentLimitReached ? 'not-allowed' : 'pointer',
+                    background: canAttachOrContinue ? '#fff' : '#eaeef2',
+                    color: canAttachOrContinue ? '#1976d2' : '#6a737d',
+                    cursor: canAttachOrContinue ? 'pointer' : 'not-allowed',
                   }}
                 >
-                  🔗 在此继续
+                  {currentBackendRun ? '接管后台运行' : '接管/继续'}
                 </button>
               )}
             </div>
 
-            <div style={{ flex: 1, overflow: 'hidden' }}>
+            <div
+              data-testid="session-content"
+              style={{ flex: 1, minHeight: 0, overflow: 'hidden', backgroundColor: '#fff' }}
+            >
               {selectedSession ? (
                 <Conversation
                   apiClient={apiClient!}
@@ -708,6 +1071,12 @@ function App() {
           </>
         )}
       </div>
+      <NewSessionDialog
+        open={newSessionDialogOpen}
+        projects={projects}
+        onCreate={handleNewWithCwd}
+        onClose={() => setNewSessionDialogOpen(false)}
+      />
       <AlertDialog
         open={alertDialog !== null}
         title={alertDialog?.title || ''}

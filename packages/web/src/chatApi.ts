@@ -1,5 +1,6 @@
 import type {
   ActiveAgentsResponse,
+  SessionHeartbeatResponse,
   StartSessionResponse,
   SendMessageRequest,
   PromptAnswer,
@@ -77,6 +78,21 @@ export async function closeAgent(runId: string): Promise<void> {
   if (!res.ok) throw new Error(`closeAgent failed: ${res.status}`);
 }
 
+export async function heartbeatSession(runId: string): Promise<SessionHeartbeatResponse> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/heartbeat`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) {
+    const error = new Error(`heartbeatSession failed: ${res.status}`) as Error & {
+      status?: number;
+    };
+    error.status = res.status;
+    throw error;
+  }
+  return (await res.json()) as SessionHeartbeatResponse;
+}
+
 /** 发一条用户消息 */
 export async function sendMessage(
   runId: string,
@@ -101,6 +117,10 @@ export async function respond(
     body: JSON.stringify(answer),
   });
   if (!res.ok) throw new Error(`respond failed: ${res.status}`);
+  const body = (await res.json()) as { ok?: boolean };
+  if (!body.ok) {
+    throw new Error("pending prompt is no longer active");
+  }
 }
 
 /** 优雅分离会话(切换会话/关闭页面)。后台正在执行的任务不会被中断,会跑完后自然回收。

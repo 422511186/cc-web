@@ -40,6 +40,8 @@ export function createApp(
     permissionMode: config.permissionMode,
     maxConcurrent: config.maxConcurrent,
     idleTimeoutMs: config.idleTimeoutMs,
+    heartbeatTtlMs: config.heartbeatTtlMs,
+    orphanIdleTimeoutMs: config.orphanIdleTimeoutMs,
     cwd: config.claudeProjectsDir,
   });
   // 续聊时按 session 真实项目目录定位 resume,目录已删则前置拦截
@@ -49,7 +51,8 @@ export function createApp(
       manager,
       (projectId, sessionId) =>
         projectId ? store.getSessionCwd(projectId, sessionId) : Promise.resolve(null),
-      (cwd) => existsSync(cwd)
+      (cwd) => existsSync(cwd),
+      config.uploadsDir
     )
   );
   app.use("/api/uploads", createUploadRouter(config.uploadsDir));

@@ -8,6 +8,8 @@ export interface SessionManagerOptions {
   permissionMode: string;
   maxConcurrent: number;
   idleTimeoutMs: number;
+  heartbeatTtlMs?: number;
+  orphanIdleTimeoutMs?: number;
   cwd?: string;
 }
 
@@ -20,6 +22,8 @@ interface Entry {
   cwd?: string;
   createdAt: number;
   lastEventAt: number;
+  lastHeartbeatAt: number | null;
+  leaseExpiresAt: number | null;
 }
 
 /** 用 runId 构造事件回调的工厂 */
@@ -28,10 +32,14 @@ type OnEventFactory = (runId: string) => (e: ServerEvent) => void;
 /** 活跃会话池:创建/查找/回收,带并发上限与空闲超时。 */
 export class SessionManager {
   private entries = new Map<string, Entry>();
-  private opts: SessionManagerOptions;
+  private opts: Required<Omit<SessionManagerOptions, "cwd">> & Pick<SessionManagerOptions, "cwd">;
 
   constructor(opts: SessionManagerOptions) {
-    this.opts = opts;
+    this.opts = {
+      ...opts,
+      heartbeatTtlMs: opts.heartbeatTtlMs ?? 45_000,
+      orphanIdleTimeoutMs: opts.orphanIdleTimeoutMs ?? 60_000,
+    };
   }
 
   private create(
@@ -52,7 +60,7 @@ export class SessionManager {
       // 执行中的流式输出会让会话保持存活,不被空闲超时误杀。
       onEvent: this.wrapOnEvent(runId, onEventFor(runId)),
     });
-    const timer = this.armTimer(runId);
+    const timer = this.armTimer(runId, this.opts.idleTimeoutMs);
     const now = Date.now();
     this.entries.set(runId, {
       session,
@@ -63,6 +71,8 @@ export class SessionManager {
       cwd: cwd ?? this.opts.cwd,
       createdAt: now,
       lastEventAt: now,
+      lastHeartbeatAt: null,
+      leaseExpiresAt: null,
     });
 
     // 插入后检查并发上限:若超限则回滚(关闭并移除刚创建的会话)
@@ -108,7 +118,32 @@ export class SessionManager {
     if (!entry) return;
     entry.lastEventAt = Date.now();
     clearTimeout(entry.timer);
-    entry.timer = this.armTimer(runId);
+    entry.timer = this.armTimer(runId, this.nextGcDelay(entry));
+  }
+
+  heartbeat(runId: string):
+    | {
+        runId: string;
+        status: "idle" | "executing" | "waiting";
+        attached: boolean;
+        lastHeartbeatAt: number;
+        leaseExpiresAt: number;
+      }
+    | null {
+    const entry = this.entries.get(runId);
+    if (!entry) return null;
+    const now = Date.now();
+    entry.lastHeartbeatAt = now;
+    entry.leaseExpiresAt = now + this.opts.heartbeatTtlMs;
+    clearTimeout(entry.timer);
+    entry.timer = this.armTimer(runId, this.nextGcDelay(entry));
+    return {
+      runId,
+      status: entry.session.getStatus(),
+      attached: true,
+      lastHeartbeatAt: entry.lastHeartbeatAt,
+      leaseExpiresAt: entry.leaseExpiresAt,
+    };
   }
 
   close(runId: string, reason: "idle" | "aborted" | "exited"): void {
@@ -163,7 +198,11 @@ export class SessionManager {
     status: "idle" | "executing" | "waiting";
     createdAt: number;
     lastEventAt: number;
+    attached: boolean;
+    lastHeartbeatAt: number | null;
+    leaseExpiresAt: number | null;
   }> {
+    const now = Date.now();
     return [...this.entries.entries()].map(([runId, entry]) => ({
       runId,
       kind: entry.kind,
@@ -173,6 +212,10 @@ export class SessionManager {
       status: entry.session.getStatus(),
       createdAt: entry.createdAt,
       lastEventAt: entry.lastEventAt,
+      attached:
+        entry.leaseExpiresAt !== null && entry.leaseExpiresAt > now,
+      lastHeartbeatAt: entry.lastHeartbeatAt,
+      leaseExpiresAt: entry.leaseExpiresAt,
     }));
   }
 
@@ -187,10 +230,40 @@ export class SessionManager {
     };
   }
 
-  private armTimer(runId: string): NodeJS.Timeout {
-    return setTimeout(
-      () => this.close(runId, "idle"),
-      this.opts.idleTimeoutMs
-    );
+  private nextGcDelay(entry: Entry): number {
+    const now = Date.now();
+    if (entry.session.getStatus() !== "idle") {
+      return this.opts.idleTimeoutMs;
+    }
+
+    if (entry.leaseExpiresAt !== null) {
+      const reclaimAt =
+        entry.leaseExpiresAt + this.opts.orphanIdleTimeoutMs;
+      return Math.max(0, reclaimAt - now);
+    }
+
+    return Math.max(0, entry.lastEventAt + this.opts.idleTimeoutMs - now);
+  }
+
+  private runGc(runId: string): void {
+    const entry = this.entries.get(runId);
+    if (!entry) return;
+
+    if (entry.session.getStatus() !== "idle") {
+      entry.timer = this.armTimer(runId, this.opts.idleTimeoutMs);
+      return;
+    }
+
+    const delay = this.nextGcDelay(entry);
+    if (delay > 0) {
+      entry.timer = this.armTimer(runId, delay);
+      return;
+    }
+
+    this.close(runId, "idle");
+  }
+
+  private armTimer(runId: string, delay: number): NodeJS.Timeout {
+    return setTimeout(() => this.runGc(runId), Math.max(0, delay));
   }
 }

@@ -80,8 +80,10 @@ cd packages/server && npx vitest run -t "should parse user messages"
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | 历史记录根目录 |
 | `CLAUDE_IMAGE_CACHE_DIR` | `<projects 同级>/image-cache` | 粘贴图片缓存目录（`/api/image` 只读这里） |
 | `PERMISSION_MODE` | `default` | `default` / `acceptEdits` / `bypassPermissions`（非 default 高风险，危险操作不再确认） |
-| `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 活跃会话空闲超时；执行/产出事件会续期 |
-| `MAX_CONCURRENT_SESSIONS` | `3` | 活跃 agent 并发上限；超限新建/续聊返回 409，需先关闭已有 agent |
+| `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 无浏览器租约时的空闲兜底回收时间；执行/产出事件会续期 |
+| `SESSION_HEARTBEAT_TTL_MS` | `45000`（45 秒） | 浏览器接管租约有效期；前端每 15 秒对本地 activeRuns 发送 heartbeat |
+| `SESSION_ORPHAN_IDLE_TIMEOUT_MS` | `60000`（60 秒） | heartbeat 停止后，空闲后台运行继续保留的宽限期，过期后回收 |
+| `MAX_CONCURRENT_SESSIONS` | `3` | 后台运行并发上限；超限新建/续聊返回 409，需先关闭已有后台运行 |
 | `UPLOADS_DIR` | `<cwd>/uploads` | 附件上传保存目录 |
 
 Windows 下可直接用根目录的 `start-server.bat` / `start-web.bat`（已预设上述变量，`AUTH_TOKEN=test-token-123456` 为开发令牌）。
@@ -122,7 +124,7 @@ TS 项目引用（project references）：server/web 的 `tsconfig.json` 都 `re
 计划二·实时续聊（Agent SDK 层）：
 
 - `sdk.ts`：`SdkClient` 窄接口（只暴露 `start()`）+ `realSdkClient` 真实适配器，转调 SDK `query()`。关键选项：续聊传 `resume` 且 `forkSession:false`（续写原会话不分叉）、`includePartialMessages:true`（逐字流）、注入 `canUseTool` 与 `abortController`。**测试注入 fake SdkClient**，不真起 claude。
-- `session.ts`：`Session`——单个活跃会话状态机。持有 `InputQueue`（喂 SDK 的 prompt）、`PendingRegistry`（挂起等用户回答）、`AbortController`。消费 SDK 输出翻译成 `ServerEvent`（delta/block/run_info/turn_end/status…），`canUseTool` 把工具调用映射成 question/plan/permission 待答事项并挂起。`isBusy()`=执行中或有待答项。两种收尾：`detach()`（优雅，不 abort，发 `closed:detached`，后台跑完自然退出）vs `close()`（abort，发 `closed`）。
+- `session.ts`：`Session`——单个活跃会话状态机。持有 `InputQueue`（喂 SDK 的 prompt）、`PendingRegistry`（挂起等用户回答）、`AbortController`。消费 SDK 输出翻译成 `ServerEvent`（delta/block/run_info/turn_end/status…），`canUseTool` 把工具调用映射成 question/plan/permission 待答事项并挂起。`isBusy()`=执行中或有待答项。SDK/模型连接失败时会发 `error`、`turn_end(isError)` 与 `status: idle`，避免前端卡在执行中。两种收尾：`detach()`（优雅，不 abort，发 `closed:detached`，后台跑完自然退出）vs `close()`（abort，发 `closed`）。
 - `sessionManager.ts`：`SessionManager`——活跃会话池，带 `maxConcurrent` 并发上限与 `idleTimeoutMs` 空闲超时（产出事件会 `touch` 续期）。`startNew` 随机 runId；`startContinue` **复用 sessionId 作 runId**。`release()` 切走时忙碌保活、空闲 `detach`。`runToCompletion().finally` 回收时做**实例相等校验**（`entries.get(runId)?.session === session`），避免误杀同 runId 重建的新会话。
 - `chatRoutes.ts`：续聊 REST + 流式 SSE。每个 runId 一个 **Hub**（append-only 事件日志 + SSE 通道 + `HUB_GRACE_MS=60s` 宽限）。路由：`POST /sessions/new`、`POST /sessions/:id/continue`（先 `resetHub` 清残留终态事件，再 `startContinue`）、`POST /sessions/:runId/message`、`/respond`、`/abort`、`DELETE /sessions/:runId`（detach）、`GET /sessions/:runId/stream`（SSE，重连整段重放事件日志）。
 - `inputQueue.ts`：`InputQueue`，AsyncIterable，把用户消息逐条喂给 SDK prompt；`close()` 让迭代结束。
@@ -135,7 +137,7 @@ TS 项目引用（project references）：server/web 的 `tsconfig.json` 都 `re
 ### 前端（packages/web/src）
 
 - `App.tsx`：根组件。令牌存 `sessionStorage`，未登录显示 `Login`；用 URL query（`?project=&session=`）记录当前会话并支持刷新恢复。顶栏展示真实项目名与磁盘路径、连接状态（已连接/已结束/连接中…/未连接）。
-- `useSession.ts`：把续聊 SSE 流（`GET /sessions/:runId/stream`）归约成 `SessionState`（messages/pending/connected/status/model/closed/closedReason…）。runId 变化时复位上一会话终态，`onopen` 复位 closed，收到 `closed` 事件置终态。
+- `useSession.ts`：把续聊 SSE 流（`GET /sessions/:runId/stream`）归约成 `SessionState`（messages/pending/connected/status/model/closed/closedReason…）。runId 变化时必须立即清空上一 run 的实时消息/待答/错误/模型/执行态，避免 A 会话的实时事件串到 B；同一 run 的 SSE 重连则在 `onopen` 到首条重放事件之间保留旧消息以避免闪烁。收到 `error` 事件时前端也要立刻回到 `status: idle` 并显示错误，收到 `closed` 事件置终态。
 - `chatApi.ts`：续聊 REST 封装（`startNew`/`startContinue`/`sendMessage`/`respond`/`closeSession`/`abortSession`/`uploadFile`），带 Bearer 头。`closeSession` 用 `keepalive` 让卸载时仍能发出、失败静默。
 - `api.ts`：`createApiClient(token)`，浏览类请求封装。
 - `components/`：`Login`、`Sidebar`（项目/会话列表 + 搜索）、`Conversation`（消息流）、`MobileMenu`（手机抽屉侧栏）、`Composer`（输入框 + 附件）、`QuestionCard`/`PermissionCard`/`PlanCard`（三类待答卡片）、`ConfirmDialog`/`AlertDialog`、`DiffView`/`AttachmentPreview`。
@@ -147,7 +149,7 @@ TS 项目引用（project references）：server/web 的 `tsconfig.json` 都 `re
 
 - 浏览/搜索：普通 REST（GET）。
 - 文件变更通知：浏览 SSE（`GET /api/events`，单向后端→前端，自动重连）。EventSource 不支持自定义头，鉴权通过中间件处理。
-- 续聊：`POST` 提交消息/回答/控制，`GET /api/sessions/:runId/stream` 用 SSE 接收流式回复与待答事项。**重连会整段重放事件日志**，故前端归约需对重复事件幂等、并以最后一个 `status`/`closed` 为准。
+- 续聊：`POST` 提交消息/回答/控制，`GET /api/sessions/:runId/stream` 用 SSE 接收流式回复与待答事项。**重连会整段重放事件日志**，故前端归约需对重复事件幂等、并以最后一个 `status`/`closed` 为准；但切换到不同 `runId` 时必须先清空上一 run 的实时态，不能复用重连防闪烁策略。
 
 ## 测试约定
 

@@ -85,6 +85,18 @@ export interface ActiveAgentsResponse {
     status: 'idle' | 'executing' | 'waiting';
     createdAt: number;
     lastEventAt: number;
+    attached: boolean;
+    lastHeartbeatAt: number | null;
+    leaseExpiresAt: number | null;
   }>;
   maxConcurrent: number;
+}
+
+export interface SessionHeartbeatResponse {
+  ok: boolean;
+  runId: string;
+  status: 'idle' | 'executing' | 'waiting';
+  attached: boolean;
+  lastHeartbeatAt: number;
+  leaseExpiresAt: number;
 }

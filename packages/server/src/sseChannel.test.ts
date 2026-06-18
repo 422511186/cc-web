@@ -24,12 +24,20 @@ function fakeRes() {
 }
 
 describe("SseChannel", () => {
+  it("construction immediately writes a comment frame so EventSource opens without waiting for heartbeat", () => {
+    const res = fakeRes();
+    new SseChannel(res as never);
+    expect(res.chunks.join("")).toBe(`: connected\n\n`);
+  });
+
   it("writes an event as 'data: <json>\\n\\n'", () => {
     const res = fakeRes();
     const ch = new SseChannel(res as never);
     const event: ServerEvent = { type: "delta", text: "hi" };
     ch.send(event);
-    expect(res.chunks.join("")).toBe(`data: ${JSON.stringify(event)}\n\n`);
+    expect(res.chunks.join("")).toBe(
+      `: connected\n\ndata: ${JSON.stringify(event)}\n\n`
+    );
   });
 
   it("sets SSE headers on construction", () => {
@@ -45,7 +53,7 @@ describe("SseChannel", () => {
     const res = fakeRes();
     const ch = new SseChannel(res as never);
     ch.heartbeat();
-    expect(res.chunks.join("")).toBe(`: ping\n\n`);
+    expect(res.chunks.join("")).toBe(`: connected\n\n: ping\n\n`);
   });
 
   it("invokes onClose when the client disconnects", () => {

@@ -329,11 +329,12 @@ useEffect(() => {
 **方案**:
 - `activeRuns` 持久化到 `sessionStorage`
 - 刷新后若当前 `sessionId` 有活跃 `runId`，直接恢复该 `runId` 的 SSE 接管，不再重复 `startContinue`
-- 恢复前先调用 `GET /api/sessions/:runId` 探活；若 run 已失效，则立即清理脏映射并回到“在此继续”
+- 恢复/切回时先乐观挂接本地已知 `runId`，立即进入“连接中 / 接管中”；`GET /api/sessions/:runId` 只做异步探活，若 run 明确失效才清理脏映射并回到“接管/继续”
+- 前端每 15 秒对当前 `runId` 与本地 `activeRuns` 中所有 run 去重发送 heartbeat；后端用 heartbeat 租约保护 idle run，不再让“已接管但暂未发任务”的会话在切换后被普通 idle timer 回收
 - 切走再切回同一历史会话时：
   - 若旧 run **忙碌**（`executing` / `waiting`）→ 继续自动接管
   - 若旧 run **空闲但仍活着** → 也继续自动接管
-  - 只有 run 已结束 / 已失效时，才清理 `activeRuns` 并重新显示“在此继续”
+  - 只有 run 已结束 / 已失效时，才清理 `activeRuns` 并重新显示“接管/继续”
 - 收到 `closed` 事件后同步删除对应 `activeRuns` 记录，避免持久化脏 runId
 
 ---
@@ -458,7 +459,7 @@ useEffect(() => {
 
 ### 关键发现
 
-1. ~~**刷新无自动重连**: `activeRunsRef` 未持久化，刷新后无法恢复 `runId`，需手动点"在此继续"，**不符合现代 SPA 习惯**~~ ✅ 已修复
+1. ~~**刷新无自动重连**: `activeRunsRef` 未持久化，刷新后无法恢复 `runId`，需手动点"接管/继续"，**不符合现代 SPA 习惯**~~ ✅ 已修复
 2. ~~**EventSource 生命周期管理不当**: 会话 `closed` 后 SSE 仍连接，浪费资源；`runId` 变 `null` 时不关闭旧连接~~ ✅ 主要泄漏项已修复（`useSession` 清理运行 SSE，`ApiClient.disconnect()` 清理浏览 SSE）
 3. ~~**Hub.log 永不截断**: 长会话无限累积事件，内存泄漏风险~~ ✅ 已修复
 4. **60秒宽限期可能过短**: 用户在 55 秒时重连可能撞上宽限到期，hub 已删除
@@ -521,7 +522,7 @@ useEffect(() => {
 - [x] 💡 去除空 assistant 占位气泡 - `turn_end` 不再追加空消息
 - [x] 💡 移除 `checkConnection` 竞态补丁 - 连接态只认 `onopen/onmessage`
 - [x] 💡 待答卡片状态重置 - PermissionCard / QuestionCard / PlanCard 在 `prompt.id` 变化时重置 answered/submitted
-- [x] 💡 activeRuns 恢复语义补全 - 活跃 run 自动接管，失效 run 快速探活后清理
+- [x] 💡 activeRuns 恢复语义补全 - 活跃 run 自动接管，失效 run 快速探活后清理；后端后台 agent 列表命中当前会话时也会补写本地映射并直接接管
 - [x] 💡 文档附件点击容错 - base64/Blob/window.open 出错时静默失败，不炸界面
 - [x] 💡 文档附件二进制字节修正 - base64 解码后按 `Uint8Array` 构造 Blob，避免非 ASCII 附件损坏
 - [x] 💡 文档附件 Blob URL 回收 - 新窗口 `load` 后 `revokeObjectURL()`，避免反复点击附件泄漏

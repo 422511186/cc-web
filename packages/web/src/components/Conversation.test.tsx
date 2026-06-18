@@ -239,6 +239,35 @@ describe('Conversation 编辑工具显示行级 diff', () => {
 });
 
 describe('Conversation 长列表虚拟滚动', () => {
+  test('虚拟列表所在 flex 子项必须允许收缩,否则接管后消息区会滚不动', async () => {
+    const messages = Array.from({ length: 20 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `消息 ${i + 1}`,
+      timestamp: Date.now() + i,
+    }));
+    const getSession = vi.fn().mockResolvedValue(makeSession(messages));
+    const apiClient = makeApiClient(getSession);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+        liveMessages={[
+          { role: 'assistant', blocks: [], streaming: '实时回复' },
+        ]}
+      />
+    );
+
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+    const scrollHost = document.querySelector(
+      '.conversation-container > .conversation-messages'
+    ) as HTMLElement | null;
+    expect(scrollHost).not.toBeNull();
+    expect(scrollHost).toHaveStyle({ minHeight: '0' });
+  });
+
   test('超长历史消息列表只渲染可视窗口附近的消息,而非一次性渲染全部 200 条', async () => {
     const messages = Array.from({ length: 200 }, (_, i) => ({
       role: i % 2 === 0 ? 'user' : 'assistant',

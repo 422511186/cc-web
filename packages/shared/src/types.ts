@@ -57,6 +57,9 @@ export interface ActiveAgent {
   status: 'idle' | 'executing' | 'waiting';
   createdAt: number;
   lastEventAt: number;
+  attached: boolean;
+  lastHeartbeatAt: number | null;
+  leaseExpiresAt: number | null;
 }
 
 export interface SearchResult {

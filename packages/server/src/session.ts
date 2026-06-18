@@ -51,7 +51,7 @@ export class Session {
   }
 
   /** 追加一条用户消息 */
-  send(text: string): void {
+  send(text: string, attachments: string[] = []): void {
     this.executing = true;
     // 每次 send 重置 reportedModel,让续聊第二轮能重新上报新模型
     this.reportedModel = null;
@@ -59,7 +59,7 @@ export class Session {
     this.emit({ type: "user_message", text });
     // 状态转移:开始执行
     this.emit({ type: "status", state: "executing" });
-    this.input.push(text);
+    this.input.push(text, attachments);
   }
 
   /**
@@ -224,7 +224,14 @@ export class Session {
         const isTurnAbort =
           this.abortingCurrentTurn || abortController.signal.aborted;
         if (!this.closed && !this.detached && !isTurnAbort) {
+          const wasBusy = this.executing || this.pending.hasAny();
+          this.executing = false;
+          this.pending.rejectAll(new Error("session failed"));
           this.emit({ type: "error", message: (err as Error).message });
+          if (wasBusy) {
+            this.emit({ type: "turn_end", isError: true });
+          }
+          this.emit({ type: "status", state: "idle" });
         }
       }
 

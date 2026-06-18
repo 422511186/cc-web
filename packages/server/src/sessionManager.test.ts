@@ -15,6 +15,8 @@ function makeManager(
   overrides: Partial<{
     maxConcurrent: number;
     idleTimeoutMs: number;
+    heartbeatTtlMs: number;
+    orphanIdleTimeoutMs: number;
     client: SdkClient;
   }> = {}
 ) {
@@ -23,6 +25,8 @@ function makeManager(
     permissionMode: "default",
     maxConcurrent: overrides.maxConcurrent ?? 5,
     idleTimeoutMs: overrides.idleTimeoutMs ?? 60_000,
+    heartbeatTtlMs: overrides.heartbeatTtlMs,
+    orphanIdleTimeoutMs: overrides.orphanIdleTimeoutMs,
   });
 }
 
@@ -174,6 +178,29 @@ describe("SessionManager", () => {
     vi.advanceTimersByTime(800); // 距上次 touch 仅 800ms
     expect(mgr.get(runId)).toBeDefined();
     vi.advanceTimersByTime(300); // 累计超过 1000ms
+    expect(mgr.get(runId)).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("heartbeat 租约存在时 idle run 不应按普通 idleTimeout 回收,租约过期后再回收", () => {
+    vi.useFakeTimers();
+    const mgr = makeManager({
+      idleTimeoutMs: 1000,
+      heartbeatTtlMs: 5000,
+      orphanIdleTimeoutMs: 2000,
+    });
+    const runId = mgr.startNew(() => () => {});
+
+    const heartbeat = mgr.heartbeat(runId);
+
+    expect(heartbeat?.attached).toBe(true);
+    vi.advanceTimersByTime(1001);
+    expect(mgr.get(runId)).toBeDefined();
+
+    vi.advanceTimersByTime(5998);
+    expect(mgr.get(runId)).toBeDefined();
+
+    vi.advanceTimersByTime(2);
     expect(mgr.get(runId)).toBeUndefined();
     vi.useRealTimers();
   });

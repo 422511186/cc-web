@@ -69,12 +69,16 @@ describe('loadConfig', () => {
   it('parses session knobs with defaults', () => {
     process.env.AUTH_TOKEN = 't1234567890abcdef'; // 16+ 字符
     delete process.env.SESSION_IDLE_TIMEOUT_MS;
+    delete process.env.SESSION_HEARTBEAT_TTL_MS;
+    delete process.env.SESSION_ORPHAN_IDLE_TIMEOUT_MS;
     delete process.env.MAX_CONCURRENT_SESSIONS;
     delete process.env.UPLOADS_DIR;
 
     const config = loadConfig();
 
     expect(config.idleTimeoutMs).toBe(3 * 60 * 1000); // 3m
+    expect(config.heartbeatTtlMs).toBe(45 * 1000);
+    expect(config.orphanIdleTimeoutMs).toBe(60 * 1000);
     expect(config.maxConcurrent).toBe(3);
     expect(config.uploadsDir).toMatch(/uploads$/);
   });
@@ -82,12 +86,16 @@ describe('loadConfig', () => {
   it('overrides session knobs from env', () => {
     process.env.AUTH_TOKEN = 't1234567890abcdef'; // 16+ 字符
     process.env.SESSION_IDLE_TIMEOUT_MS = '5000';
+    process.env.SESSION_HEARTBEAT_TTL_MS = '15000';
+    process.env.SESSION_ORPHAN_IDLE_TIMEOUT_MS = '30000';
     process.env.MAX_CONCURRENT_SESSIONS = '2';
     process.env.UPLOADS_DIR = '/tmp/up';
 
     const config = loadConfig();
 
     expect(config.idleTimeoutMs).toBe(5000);
+    expect(config.heartbeatTtlMs).toBe(15000);
+    expect(config.orphanIdleTimeoutMs).toBe(30000);
     expect(config.maxConcurrent).toBe(2);
     expect(config.uploadsDir).toBe('/tmp/up');
   });

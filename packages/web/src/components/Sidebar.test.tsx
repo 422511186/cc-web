@@ -79,8 +79,7 @@ describe('Sidebar 新建会话按钮', () => {
     global.window.prompt = vi.fn();
   });
 
-  test('点击侧栏"新建会话"按钮时弹出目录输入框并调用 onNewSession 回调', async () => {
-    vi.mocked(window.prompt).mockReturnValue('C:/my/project');
+  test('点击侧栏"新建会话"按钮只打开新建流程,不直接使用第一个项目路径', async () => {
     const onNewSession = vi.fn();
     const apiClient = makeApiClient();
 
@@ -93,21 +92,16 @@ describe('Sidebar 新建会话按钮', () => {
     );
 
     // 等待加载完成
-    await screen.findByRole('button', { name: /新建会话/ });
+    await screen.findByRole('button', { name: '+ 新建会话' });
 
-    const newButton = screen.getByRole('button', { name: /新建会话/ });
+    const newButton = screen.getByRole('button', { name: '+ 新建会话' });
     fireEvent.click(newButton);
 
-    await waitFor(() => expect(window.prompt).toHaveBeenCalledWith(
-      expect.stringContaining('目录'),
-      expect.any(String)
-    ));
-
-    expect(onNewSession).toHaveBeenCalledWith('C:/my/project');
+    expect(window.prompt).not.toHaveBeenCalled();
+    expect(onNewSession).toHaveBeenCalledWith();
   });
 
-  test('侧栏新建按钮取消输入时不调用回调', async () => {
-    vi.mocked(window.prompt).mockReturnValue(null);
+  test('顶部不再显示“快速新建当前项目”按钮,避免和新建会话入口混淆', async () => {
     const onNewSession = vi.fn();
     const apiClient = makeApiClient();
 
@@ -120,13 +114,9 @@ describe('Sidebar 新建会话按钮', () => {
     );
 
     // 等待加载完成
-    await screen.findByRole('button', { name: /新建会话/ });
+    await screen.findByRole('button', { name: '+ 新建会话' });
 
-    const newButton = screen.getByRole('button', { name: /新建会话/ });
-    fireEvent.click(newButton);
-
-    await waitFor(() => expect(window.prompt).toHaveBeenCalled());
-    expect(onNewSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /快速新建当前项目/ })).not.toBeInTheDocument();
   });
 });
 
@@ -170,7 +160,7 @@ describe('Sidebar 自动展开', () => {
   });
 });
 
-describe('Sidebar 活跃 agent 与快速新建', () => {
+describe('Sidebar 后台运行与快速新建', () => {
   test('项目标题上的快速新建按钮直接使用该项目 path', async () => {
     const apiClient = makeApiClient();
     const onQuickNewSession = vi.fn();
@@ -188,13 +178,14 @@ describe('Sidebar 活跃 agent 与快速新建', () => {
     );
 
     await screen.findByText('第一个会话');
-    fireEvent.click(screen.getByRole('button', { name: '快速新建' }));
+    fireEvent.click(screen.getByRole('button', { name: '在 proj1 快速新建会话' }));
 
     expect(onQuickNewSession).toHaveBeenCalledWith('C:/proj1');
   });
 
-  test('活跃 agent 列表显示状态并允许关闭', async () => {
+  test('后台运行卡片展示项目身份、状态并允许接管和关闭', async () => {
     const apiClient = makeApiClient();
+    const onActiveAgentSelect = vi.fn();
     const onActiveAgentClose = vi.fn();
 
     render(
@@ -204,26 +195,124 @@ describe('Sidebar 活跃 agent 与快速新建', () => {
         activeAgents={[
           {
             runId: 'run-1',
-            kind: 'new',
-            sessionId: null,
+            kind: 'continue',
+            sessionId: 'sess1',
+            projectId: 'proj1',
             status: 'executing',
             createdAt: 1,
             lastEventAt: 1,
           },
         ]}
         maxAgents={3}
-        onActiveAgentSelect={() => {}}
+        onActiveAgentSelect={onActiveAgentSelect}
         onActiveAgentClose={onActiveAgentClose}
       />
     );
 
-    await screen.findByText(/活跃 Agents 1\/3/);
-    expect(screen.getByText(/新建会话 · executing/)).toBeInTheDocument();
+    await screen.findByText(/后台运行中 1\/3/);
+    expect(screen.getByRole('button', { name: /接管后台运行 proj1/ })).toBeInTheDocument();
+    expect(screen.getByText('执行中')).toBeInTheDocument();
+    expect(screen.getByText(/sess1/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '关闭 run-1' }));
+    fireEvent.click(screen.getByRole('button', { name: /接管后台运行 proj1/ }));
+    expect(onActiveAgentSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1' })
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭后台运行 proj1' }));
     expect(onActiveAgentClose).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run-1' })
     );
+  });
+
+  test('当前浏览器正在接管但 SSE 尚未连接时,后台运行项显示“接管中”', async () => {
+    const apiClient = makeApiClient();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        activeAgents={[
+          {
+            runId: 'run-connecting',
+            kind: 'continue',
+            sessionId: 'sess1',
+            projectId: 'proj1',
+            status: 'executing',
+            createdAt: 1,
+            lastEventAt: 1,
+          },
+        ]}
+        maxAgents={3}
+        currentRunId="run-connecting"
+        currentRunConnected={false}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={() => {}}
+      />
+    );
+
+    await screen.findByText('接管中');
+    expect(screen.getByRole('button', { name: /接管后台运行 proj1/ })).toBeInTheDocument();
+    expect(screen.queryByText('执行中')).not.toBeInTheDocument();
+  });
+
+  test('当前浏览器已接管的后台运行项显示“已接管”', async () => {
+    const apiClient = makeApiClient();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        activeAgents={[
+          {
+            runId: 'run-connected',
+            kind: 'continue',
+            sessionId: 'sess1',
+            projectId: 'proj1',
+            status: 'idle',
+            createdAt: 1,
+            lastEventAt: 1,
+          },
+        ]}
+        maxAgents={3}
+        currentRunId="run-connected"
+        currentRunConnected={true}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={() => {}}
+      />
+    );
+
+    await screen.findByText('已接管');
+    expect(screen.getByRole('button', { name: /接管后台运行 proj1/ })).toBeInTheDocument();
+    expect(screen.queryByText('空闲')).not.toBeInTheDocument();
+  });
+
+  test('历史会话行显示后台运行徽标', async () => {
+    const apiClient = makeApiClient();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        activeAgents={[
+          {
+            runId: 'sess1',
+            kind: 'continue',
+            sessionId: 'sess1',
+            projectId: 'proj1',
+            status: 'waiting',
+            createdAt: 1,
+            lastEventAt: 1,
+          },
+        ]}
+        maxAgents={3}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={() => {}}
+      />
+    );
+
+    await screen.findByText('第一个会话');
+    expect(screen.getByText('后台运行')).toBeInTheDocument();
   });
 
   test('达到上限时禁用快速新建并显示提示', async () => {
@@ -244,7 +333,7 @@ describe('Sidebar 活跃 agent 与快速新建', () => {
       />
     );
 
-    await screen.findByText(/已达上限/);
+    await screen.findByText(/已达后台运行上限/);
     expect(screen.getByRole('button', { name: /\+ 新建会话/ })).toBeDisabled();
   });
 });

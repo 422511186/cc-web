@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { ServerEvent, PendingPrompt } from "@cc-web/shared";
+import { clientLog } from "./diagnostics";
 
 /** 前端侧的一条流式消息 */
 export interface LiveMessage {
@@ -128,8 +129,13 @@ export function useSession(runId: string | null): SessionState {
         break;
       case "error":
         setError(event.message);
+        setPending(null);
+        setStatus("idle");
         break;
       case "status":
+        if (event.state !== "waiting") {
+          setPending(null);
+        }
         setStatus(event.state);
         break;
       case "run_info":
@@ -147,8 +153,14 @@ export function useSession(runId: string | null): SessionState {
 
   useEffect(() => {
     if (!runId) return;
-    // runId 变化:先复位上一会话的终态,避免切到新会话时短暂残留「已结束」。
-    // 真正的连接状态由随后的 onopen/onmessage 接管。
+    // runId 变化代表切到另一个后端 run,必须立即清空上一 run 的实时态。
+    // 同一 run 的 SSE 重连不会触发此 effect,仍由 onopen 后首条重放事件做无闪烁重建。
+    setMessages([]);
+    setPending(null);
+    setError(null);
+    setStatus("idle");
+    setModel(null);
+    setEffort(null);
     setClosed(false);
     setClosedReason(null);
     setConnected(false);
@@ -159,12 +171,14 @@ export function useSession(runId: string | null): SessionState {
 
     function connect() {
       if (cancelled || !runId) return;
+      clientLog("sse.connect", { runId });
       const es = new EventSource(
         `/api/sessions/${encodeURIComponent(runId)}/stream${tokenParam()}`
       );
       esRef.current = es;
 
       es.onopen = () => {
+        clientLog("sse.open", { runId });
         // (重)连接成功后等待首条重放事件时再原子重建。
         // 这样在 onopen 到首条重放之间不会瞬间清空 UI 造成闪烁。
         rebuildingRef.current = true;
@@ -179,12 +193,15 @@ export function useSession(runId: string | null): SessionState {
         // 收到首条消息即视为已连接(onopen 可能延后触发)
         setConnected(true);
         try {
-          apply(JSON.parse(e.data) as ServerEvent);
+          const event = JSON.parse(e.data) as ServerEvent;
+          clientLog("sse.message", { runId, type: event.type });
+          apply(event);
         } catch {
           /* 忽略心跳/坏帧 */
         }
       };
       es.onerror = () => {
+        clientLog("sse.error", { runId, retryCount });
         setConnected(false);
         es.close();
 
@@ -206,6 +223,7 @@ export function useSession(runId: string | null): SessionState {
     return () => {
       cancelled = true;
       if (retry) clearTimeout(retry);
+      clientLog("sse.cleanup", { runId });
       esRef.current?.close();
       esRef.current = null;
     };

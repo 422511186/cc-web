@@ -16,6 +16,19 @@ describe("InputQueue", () => {
     expect(got).toEqual(["hello", "world"]);
   });
 
+  it("push with attachments includes absolute file paths in the SDK user content", async () => {
+    const q = new InputQueue();
+    q.push("请看附件", ["C:/uploads/a.png", "C:/uploads/report.pdf"]);
+    q.close();
+
+    const [msg] = await collect(q);
+
+    expect(msg.message.content).toContain("请看附件");
+    expect(msg.message.content).toContain("C:/uploads/a.png");
+    expect(msg.message.content).toContain("C:/uploads/report.pdf");
+    expect(msg.message.content).toContain("Attached files");
+  });
+
   it("waits for a message pushed after iteration starts", async () => {
     const q = new InputQueue();
     const collected: string[] = [];
@@ -64,3 +77,11 @@ describe("InputQueue", () => {
     expect(result1.done).toBe(true);
   });
 });
+
+async function collect(q: InputQueue) {
+  const messages = [];
+  for await (const msg of q) {
+    messages.push(msg);
+  }
+  return messages;
+}
