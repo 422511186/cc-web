@@ -319,6 +319,33 @@ export type ServerEvent =
 
 ---
 
+### 12. develop 恢复为长期分支，并引入 GitHub Actions CI
+
+**设计文档**: 早期文档只描述了本地 `npm test` / `npm run build`，没有定义远端分支策略和 CI 触发方式。
+
+**实际实现** (2026-06-18):
+- ✅ `develop` 明确保留为长期开发分支，不再在合并 PR 后自动删除
+- ✅ 新增 `.github/workflows/ci.yml`
+- ✅ CI 只对 `develop` 触发：
+  - `push` 到 `develop`
+  - `pull_request` 的目标分支为 `develop`
+- ✅ 远端校验步骤保持与本地一致：
+  - `npm ci`
+  - `npm run build`
+  - `npm test`
+- ✅ 已补充一个契约测试 `packages/shared/src/ciWorkflow.test.ts`，约束 workflow 文件存在、触发分支正确、并执行安装/构建/测试
+
+**动机**:
+1. `develop` 需要作为持续集成与日常开发的稳定落点，不能在一次 PR 合并后被顺手删掉
+2. 让“本地通过”之外，再有一层 GitHub 远端的干净环境验证
+3. 保持 CI 足够简单，先围绕主开发分支建立最可靠的反馈链路
+
+**影响**:
+- 以后改动只要推到 `develop`，就会自动触发一轮完整构建与测试
+- 可直接用 `gh run list / view / watch` 读取 CI 结果和日志，无需手动翻网页
+
+---
+
 ### 12. 文档附件预览从“可打开”补齐到“可回收”
 
 **设计文档**: 只关注对话中展示图片/文档，没有明确文档附件在新窗口预览后的 Blob URL 生命周期。
