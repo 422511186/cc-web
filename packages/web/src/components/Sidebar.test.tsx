@@ -169,3 +169,82 @@ describe('Sidebar 自动展开', () => {
     expect(await screen.findByText('Session 1')).toBeInTheDocument();
   });
 });
+
+describe('Sidebar 活跃 agent 与快速新建', () => {
+  test('项目标题上的快速新建按钮直接使用该项目 path', async () => {
+    const apiClient = makeApiClient();
+    const onQuickNewSession = vi.fn();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        onQuickNewSession={onQuickNewSession}
+        activeAgents={[]}
+        maxAgents={3}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={() => {}}
+      />
+    );
+
+    await screen.findByText('第一个会话');
+    fireEvent.click(screen.getByRole('button', { name: '快速新建' }));
+
+    expect(onQuickNewSession).toHaveBeenCalledWith('C:/proj1');
+  });
+
+  test('活跃 agent 列表显示状态并允许关闭', async () => {
+    const apiClient = makeApiClient();
+    const onActiveAgentClose = vi.fn();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        activeAgents={[
+          {
+            runId: 'run-1',
+            kind: 'new',
+            sessionId: null,
+            status: 'executing',
+            createdAt: 1,
+            lastEventAt: 1,
+          },
+        ]}
+        maxAgents={3}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={onActiveAgentClose}
+      />
+    );
+
+    await screen.findByText(/活跃 Agents 1\/3/);
+    expect(screen.getByText(/新建会话 · executing/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭 run-1' }));
+    expect(onActiveAgentClose).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1' })
+    );
+  });
+
+  test('达到上限时禁用快速新建并显示提示', async () => {
+    const apiClient = makeApiClient();
+
+    render(
+      <Sidebar
+        apiClient={apiClient}
+        onSessionSelect={() => {}}
+        activeAgents={[
+          { runId: '1', kind: 'new', sessionId: null, status: 'idle', createdAt: 1, lastEventAt: 1 },
+          { runId: '2', kind: 'new', sessionId: null, status: 'idle', createdAt: 1, lastEventAt: 1 },
+          { runId: '3', kind: 'continue', sessionId: 's3', projectId: 'p3', status: 'waiting', createdAt: 1, lastEventAt: 1 },
+        ]}
+        maxAgents={3}
+        onActiveAgentSelect={() => {}}
+        onActiveAgentClose={() => {}}
+      />
+    );
+
+    await screen.findByText(/已达上限/);
+    expect(screen.getByRole('button', { name: /\+ 新建会话/ })).toBeDisabled();
+  });
+});

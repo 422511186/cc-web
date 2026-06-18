@@ -74,3 +74,17 @@ export interface NewSessionRequest {
 export interface NewSessionResponse {
   runId: string;
 }
+
+export interface ActiveAgentsResponse {
+  agents: Array<{
+    runId: string;
+    kind: 'new' | 'continue';
+    sessionId: string | null;
+    projectId?: string;
+    cwd?: string;
+    status: 'idle' | 'executing' | 'waiting';
+    createdAt: number;
+    lastEventAt: number;
+  }>;
+  maxConcurrent: number;
+}

@@ -1,5 +1,5 @@
 import { vi, beforeEach, afterEach } from 'vitest';
-import { closeSession, startNew } from './chatApi';
+import { closeSession, startNew, listActiveAgents, closeAgent } from './chatApi';
 
 beforeEach(() => {
   Storage.prototype.getItem = vi.fn(() => 'tok');
@@ -63,5 +63,35 @@ describe('startNew', () => {
     expect(url).toBe('/api/sessions/new');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ cwd: 'C:/my/project' });
+  });
+});
+
+describe('active agents', () => {
+  test('listActiveAgents returns active list with auth header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ agents: [], maxConcurrent: 3 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await listActiveAgents();
+
+    expect(result.maxConcurrent).toBe(3);
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/active', expect.objectContaining({
+      method: 'GET',
+      headers: { Authorization: 'Bearer tok' },
+    }));
+  });
+
+  test('closeAgent sends POST to close endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await closeAgent('run-9');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/run-9/close', expect.objectContaining({
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok' },
+    }));
   });
 });

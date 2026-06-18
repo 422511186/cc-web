@@ -56,6 +56,8 @@ vi.mock('./chatApi', () => ({
   closeSession: vi.fn(() => Promise.resolve()),
   abortSession: vi.fn(() => Promise.resolve()),
   probeRun: vi.fn(() => Promise.resolve(true)),
+  listActiveAgents: vi.fn(() => Promise.resolve({ agents: [], maxConcurrent: 3 })),
+  closeAgent: vi.fn(() => Promise.resolve()),
 }));
 
 // 可控的 useSession mock:各测试可改写 sessionState 来驱动状态栏文案
@@ -224,6 +226,23 @@ describe('App 退出登录', () => {
     act(() => {
       unauthorizedHandler?.();
     });
+
+    await waitFor(() => expect(screen.getByTestId('login')).toBeInTheDocument());
+    expect(store.authToken).toBeUndefined();
+    expect(mockDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test('活跃 agent 轮询收到 401 时也应自动清 token 并回到登录页', async () => {
+    const chatApi = await import('./chatApi');
+    const unauthorizedError = Object.assign(new Error('Unauthorized'), { status: 401 });
+    vi.mocked(chatApi.listActiveAgents).mockRejectedValueOnce(unauthorizedError);
+
+    const store: Record<string, string> = { authToken: 'expired-token' };
+    Storage.prototype.getItem = vi.fn((k: string) => store[k] ?? null);
+    Storage.prototype.setItem = vi.fn((k: string, v: string) => { store[k] = v; });
+    Storage.prototype.removeItem = vi.fn((k: string) => { delete store[k]; });
+
+    render(<App />);
 
     await waitFor(() => expect(screen.getByTestId('login')).toBeInTheDocument());
     expect(store.authToken).toBeUndefined();
@@ -728,5 +747,27 @@ describe('App activeRuns 持久化', () => {
       'cc-web-activeRuns',
       '{}'
     );
+  });
+});
+
+describe('App 活跃 agent 管理', () => {
+  beforeEach(() => {
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      return null;
+    });
+  });
+
+  test('切换会话时不应调用 closeSession，只切换当前查看目标', async () => {
+    const chatApi = await import('./chatApi');
+    render(<App />);
+
+    fireEvent.click(screen.getByTestId('select-A'));
+    await screen.findByRole('button', { name: '🔗 在此继续' });
+
+    fireEvent.click(screen.getByTestId('select-B'));
+    fireEvent.click(screen.getByTestId('select-A'));
+
+    expect(chatApi.closeSession).not.toHaveBeenCalled();
   });
 });

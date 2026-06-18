@@ -93,4 +93,34 @@ describe("createApp", () => {
       rmSync(cfg.uploadsDir, { recursive: true, force: true });
     }
   });
+
+  it("active agent probe routes should not be intercepted by history session route", async () => {
+    const cfg = baseConfig();
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+    try {
+      const startRes = await request(app)
+        .post("/api/sessions/new")
+        .set("Authorization", `Bearer ${cfg.authToken}`)
+        .send({});
+      const runId = startRes.body.runId as string;
+
+      const activeListRes = await request(app)
+        .get("/api/sessions/active")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(activeListRes.status).toBe(200);
+      expect(activeListRes.body.agents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ runId }),
+        ])
+      );
+
+      const probeRes = await request(app)
+        .get(`/api/sessions/${runId}`)
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(probeRes.status).toBe(200);
+      expect(probeRes.body).toEqual({ runId, active: true });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
 });

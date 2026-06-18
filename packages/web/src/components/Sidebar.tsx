@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { Project, Session } from '@cc-web/shared';
+import type { ActiveAgent, Project, Session } from '@cc-web/shared';
 import type { ApiClient } from '../api';
 
 interface SidebarProps {
@@ -9,9 +9,25 @@ interface SidebarProps {
   onNewSession?: (cwd: string) => void;
   /** 项目列表加载完成后上报给父组件(供顶栏展示正确的项目名) */
   onProjectsLoad?: (projects: Project[]) => void;
+  activeAgents: ActiveAgent[];
+  maxAgents: number;
+  onActiveAgentSelect: (agent: ActiveAgent) => void;
+  onActiveAgentClose: (agent: ActiveAgent) => void;
+  onQuickNewSession?: (cwd: string) => void;
 }
 
-export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSession, onProjectsLoad }: SidebarProps) {
+export function Sidebar({
+  apiClient,
+  onSessionSelect,
+  selectedSessionId,
+  onNewSession,
+  onProjectsLoad,
+  activeAgents = [],
+  maxAgents = 3,
+  onActiveAgentSelect = () => {},
+  onActiveAgentClose = () => {},
+  onQuickNewSession,
+}: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, Session[]>>({});
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
@@ -98,6 +114,8 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
     }
   };
 
+  const isLimited = activeAgents.length >= maxAgents;
+
   if (loading) {
     return <div style={{ padding: '1rem' }}>Loading...</div>;
   }
@@ -117,23 +135,91 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
       }}>
         <button
           onClick={handleNewClick}
+          disabled={isLimited}
           style={{
             width: '100%',
             padding: '0.625rem',
-            backgroundColor: '#1976d2',
-            color: 'white',
+            backgroundColor: isLimited ? '#eaeef2' : '#1976d2',
+            color: isLimited ? '#6a737d' : 'white',
             border: 'none',
             borderRadius: '6px',
-            cursor: 'pointer',
+            cursor: isLimited ? 'not-allowed' : 'pointer',
+            fontSize: '0.875rem',
+            fontWeight: 500,
+            transition: 'background-color 0.2s',
+            marginBottom: '0.5rem',
+          }}
+        >
+          + 新建会话
+        </button>
+        <button
+          onClick={() => onQuickNewSession?.(projects[0]?.path ?? '')}
+          disabled={isLimited || !projects[0]}
+          style={{
+            width: '100%',
+            padding: '0.625rem',
+            backgroundColor: isLimited || !projects[0] ? '#eaeef2' : '#fff',
+            color: isLimited || !projects[0] ? '#6a737d' : '#1976d2',
+            border: '1px solid #1976d2',
+            borderRadius: '6px',
+            cursor: isLimited || !projects[0] ? 'not-allowed' : 'pointer',
             fontSize: '0.875rem',
             fontWeight: 500,
             transition: 'background-color 0.2s',
           }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#1565c0'}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#1976d2'}
         >
-          + 新建会话
+          快速新建当前项目
         </button>
+      </div>
+
+      <div style={{ padding: '0.75rem 1.25rem', borderBottom: '1px solid #e8e8e8', backgroundColor: '#fafafa' }}>
+        <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+          活跃 Agents {activeAgents.length}/{maxAgents}
+        </div>
+        {activeAgents.length === 0 ? (
+          <div style={{ fontSize: '0.8rem', color: '#999' }}>暂无活跃 agent</div>
+        ) : (
+          activeAgents.map((agent) => (
+            <div key={agent.runId} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+              <button
+                onClick={() => onActiveAgentSelect(agent)}
+                style={{
+                  flex: 1,
+                  textAlign: 'left',
+                  padding: '0.5rem 0.65rem',
+                  borderRadius: 6,
+                  border: '1px solid #d0d7de',
+                  background: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                  {agent.kind === 'continue' ? '历史续聊' : '新建会话'} · {agent.status}
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#666' }}>{agent.runId}</div>
+              </button>
+              <button
+                aria-label={`关闭 ${agent.runId}`}
+                onClick={() => onActiveAgentClose(agent)}
+                style={{
+                  border: '1px solid #dc3545',
+                  background: '#fff',
+                  color: '#dc3545',
+                  borderRadius: 6,
+                  padding: '0.35rem 0.5rem',
+                  cursor: 'pointer',
+                }}
+              >
+                关
+              </button>
+            </div>
+          ))
+        )}
+        {isLimited && (
+          <div style={{ fontSize: '0.8rem', color: '#cf222e' }}>
+            已达上限，请先关闭一个 agent
+          </div>
+        )}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto' }}>
@@ -170,6 +256,25 @@ export function Sidebar({ apiClient, onSessionSelect, selectedSessionId, onNewSe
               }}>
                 {project.name}
               </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onQuickNewSession?.(project.path);
+                }}
+                disabled={isLimited}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: 6,
+                  border: '1px solid #1976d2',
+                  background: isLimited ? '#eaeef2' : '#fff',
+                  color: isLimited ? '#6a737d' : '#1976d2',
+                  cursor: isLimited ? 'not-allowed' : 'pointer',
+                  fontSize: '0.75rem',
+                }}
+              >
+                快速新建
+              </button>
             </div>
 
             {expandedProjects.has(project.id) && sessionsByProject[project.id] && (

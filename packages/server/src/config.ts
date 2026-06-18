@@ -34,7 +34,7 @@ export function loadConfig(): Config {
     : 3 * 60 * 1000;
   const maxConcurrent = process.env.MAX_CONCURRENT_SESSIONS
     ? Number(process.env.MAX_CONCURRENT_SESSIONS)
-    : 4;
+    : 3;
   const uploadsDir = process.env.UPLOADS_DIR ||
     path.join(process.cwd(), 'uploads');
 

@@ -81,10 +81,10 @@ cd packages/server && npx vitest run -t "should parse user messages"
 | `CLAUDE_IMAGE_CACHE_DIR` | `<projects 同级>/image-cache` | 粘贴图片缓存目录（`/api/image` 只读这里） |
 | `PERMISSION_MODE` | `default` | `default` / `acceptEdits` / `bypassPermissions`（非 default 高风险，危险操作不再确认） |
 | `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 活跃会话空闲超时；执行/产出事件会续期 |
-| `MAX_CONCURRENT_SESSIONS` | `4` | 活跃会话池并发上限；超限新建会抛错 |
+| `MAX_CONCURRENT_SESSIONS` | `3` | 活跃 agent 并发上限；超限新建/续聊返回 409，需先关闭已有 agent |
 | `UPLOADS_DIR` | `<cwd>/uploads` | 附件上传保存目录 |
 
-Windows 下可直接用根目录的 `start-server.bat` / `start-web.bat`（已预设上述变量，`AUTH_TOKEN=test-token-123` 为开发令牌）。
+Windows 下可直接用根目录的 `start-server.bat` / `start-web.bat`（已预设上述变量，`AUTH_TOKEN=test-token-123456` 为开发令牌）。
 
 ## 架构
 

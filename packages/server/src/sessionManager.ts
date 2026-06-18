@@ -14,6 +14,12 @@ export interface SessionManagerOptions {
 interface Entry {
   session: Session;
   timer: NodeJS.Timeout;
+  kind: "new" | "continue";
+  sessionId: string | null;
+  projectId?: string;
+  cwd?: string;
+  createdAt: number;
+  lastEventAt: number;
 }
 
 /** 用 runId 构造事件回调的工厂 */
@@ -32,7 +38,10 @@ export class SessionManager {
     runId: string,
     resume: string | undefined,
     onEventFor: OnEventFactory,
-    cwd?: string
+    cwd?: string,
+    kind: "new" | "continue" = "new",
+    sessionId: string | null = null,
+    projectId?: string
   ): string {
     const session = new Session({
       client: this.opts.client,
@@ -44,7 +53,17 @@ export class SessionManager {
       onEvent: this.wrapOnEvent(runId, onEventFor(runId)),
     });
     const timer = this.armTimer(runId);
-    this.entries.set(runId, { session, timer });
+    const now = Date.now();
+    this.entries.set(runId, {
+      session,
+      timer,
+      kind,
+      sessionId,
+      projectId,
+      cwd: cwd ?? this.opts.cwd,
+      createdAt: now,
+      lastEventAt: now,
+    });
 
     // 插入后检查并发上限:若超限则回滚(关闭并移除刚创建的会话)
     if (this.entries.size > this.opts.maxConcurrent) {
@@ -68,21 +87,26 @@ export class SessionManager {
   }
 
   startNew(onEventFor: OnEventFactory, cwd?: string): string {
-    return this.create(randomUUID(), undefined, onEventFor, cwd);
+    return this.create(randomUUID(), undefined, onEventFor, cwd, "new", null);
   }
 
-  startContinue(sessionId: string, onEventFor: OnEventFactory, cwd?: string): string {
-    return this.create(sessionId, sessionId, onEventFor, cwd);
+  startContinue(sessionId: string, onEventFor: OnEventFactory, cwd?: string, projectId?: string): string {
+    return this.create(sessionId, sessionId, onEventFor, cwd, "continue", sessionId, projectId);
   }
 
   get(runId: string): Session | undefined {
     return this.entries.get(runId)?.session;
   }
 
+  getMaxConcurrent(): number {
+    return this.opts.maxConcurrent;
+  }
+
   /** 重置空闲计时器(有活动时调用) */
   touch(runId: string): void {
     const entry = this.entries.get(runId);
     if (!entry) return;
+    entry.lastEventAt = Date.now();
     clearTimeout(entry.timer);
     entry.timer = this.armTimer(runId);
   }
@@ -128,6 +152,28 @@ export class SessionManager {
   /** 会话有事件产出时调用:续期空闲计时器(执行中的流不会被误杀) */
   onSessionEvent(runId: string): void {
     this.touch(runId);
+  }
+
+  listActiveAgents(): Array<{
+    runId: string;
+    kind: "new" | "continue";
+    sessionId: string | null;
+    projectId?: string;
+    cwd?: string;
+    status: "idle" | "executing" | "waiting";
+    createdAt: number;
+    lastEventAt: number;
+  }> {
+    return [...this.entries.entries()].map(([runId, entry]) => ({
+      runId,
+      kind: entry.kind,
+      sessionId: entry.sessionId,
+      projectId: entry.projectId,
+      cwd: entry.cwd,
+      status: entry.session.getStatus(),
+      createdAt: entry.createdAt,
+      lastEventAt: entry.lastEventAt,
+    }));
   }
 
   /** 把会话事件回调包一层:每次 emit 先续期空闲计时器,再转交真正回调 */

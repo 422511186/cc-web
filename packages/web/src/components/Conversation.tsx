@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import type { MutableRefObject } from 'react';
 import type { SessionDetail, Message, PendingPrompt, PromptAnswer } from '@cc-web/shared';
 import type { ApiClient } from '../api';
 import type { LiveMessage } from '../useSession';
@@ -12,6 +13,7 @@ import {
   List,
   useDynamicRowHeight,
   useListRef,
+  type ListImperativeAPI,
   type RowComponentProps,
 } from 'react-window';
 import '../markdown.css';
@@ -591,7 +593,7 @@ export function Conversation({ apiClient, projectId, sessionId, projectName, pro
   const [error, setError] = useState<string | null>(null);
   const [currentUserMessageIndex, setCurrentUserMessageIndex] = useState<number>(0);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const listRef = useListRef();
+  const listRef = useListRef() as MutableRefObject<ListImperativeAPI | null>;
   const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 140, key: sessionId });
 
   // 续聊是否活跃:活跃时 assistant 输出由实时流(liveMessages)负责渲染,

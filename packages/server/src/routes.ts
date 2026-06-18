@@ -66,13 +66,13 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager, image
   });
 
   // GET /api/sessions/:sessionId
-  router.get('/sessions/:sessionId', async (req, res) => {
+  router.get('/sessions/:sessionId', async (req, res, next) => {
     try {
       const { sessionId } = req.params;
       const { projectId } = req.query;
 
       if (!projectId || typeof projectId !== 'string') {
-        res.status(400).json({ error: 'projectId query parameter is required' });
+        next();
         return;
       }
 

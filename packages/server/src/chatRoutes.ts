@@ -92,46 +92,71 @@ export function createChatRouter(
 
   // 新建对话
   router.post("/sessions/new", (req, res) => {
-    const { cwd } = req.body as NewSessionRequest;
+    try {
+      const { cwd } = req.body as NewSessionRequest;
 
-    // 如果提供了 cwd，需要校验
-    if (cwd) {
-      // 防穿越：检查相对路径和危险路径模式
-      if (cwd.includes("..") || !path.isAbsolute(cwd)) {
-        res.status(400).json({ error: "非法路径" });
-        return;
+      // 如果提供了 cwd，需要校验
+      if (cwd) {
+        // 防穿越：检查相对路径和危险路径模式
+        if (cwd.includes("..") || !path.isAbsolute(cwd)) {
+          res.status(400).json({ error: "非法路径" });
+          return;
+        }
+
+        // 检查目录是否存在
+        if (dirExists && !dirExists(cwd)) {
+          res.status(400).json({ error: "目录不存在" });
+          return;
+        }
       }
 
-      // 检查目录是否存在
-      if (dirExists && !dirExists(cwd)) {
-        res.status(400).json({ error: "目录不存在" });
+      const runId = mgr.startNew((id) => makeOnEvent(id), cwd);
+      const body: StartSessionResponse = { runId };
+      res.json(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/max concurrent/i.test(message)) {
+        res.status(409).json({ error: message });
         return;
       }
+      throw error;
     }
-
-    const runId = mgr.startNew((id) => makeOnEvent(id), cwd);
-    const body: StartSessionResponse = { runId };
-    res.json(body);
   });
 
   // 续聊
   router.post("/sessions/:id/continue", async (req, res) => {
-    const sessionId = req.params.id;
-    const projectId = (req.body as { projectId?: string })?.projectId;
-    const cwd = resolveCwd
-      ? (await resolveCwd(projectId, sessionId)) ?? undefined
-      : undefined;
-    // 原项目目录已不存在则无法 resume,给出友好错误而非启动后抛 SDK 错误
-    if (cwd && dirExists && !dirExists(cwd)) {
-      res.status(409).json({ error: "原项目目录已不存在,无法续聊" });
-      return;
+    try {
+      const sessionId = req.params.id;
+      const projectId = (req.body as { projectId?: string })?.projectId;
+      const cwd = resolveCwd
+        ? (await resolveCwd(projectId, sessionId)) ?? undefined
+        : undefined;
+      // 原项目目录已不存在则无法 resume,给出友好错误而非启动后抛 SDK 错误
+      if (cwd && dirExists && !dirExists(cwd)) {
+        res.status(409).json({ error: "原项目目录已不存在,无法续聊" });
+        return;
+      }
+      // 复用 sessionId 作 runId:清掉上一轮分离遗留的 hub(含旧 closed 事件),
+      // 避免新连接整段重放时重放出旧 closed 导致前端误判已结束/卡连接中。
+      resetHub(sessionId);
+      const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd, projectId);
+      const body: StartSessionResponse = { runId };
+      res.json(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/max concurrent/i.test(message)) {
+        res.status(409).json({ error: message });
+        return;
+      }
+      throw error;
     }
-    // 复用 sessionId 作 runId:清掉上一轮分离遗留的 hub(含旧 closed 事件),
-    // 避免新连接整段重放时重放出旧 closed 导致前端误判已结束/卡连接中。
-    resetHub(sessionId);
-    const runId = mgr.startContinue(sessionId, (id) => makeOnEvent(id), cwd);
-    const body: StartSessionResponse = { runId };
-    res.json(body);
+  });
+
+  router.get("/sessions/active", (_req, res) => {
+    res.json({
+      agents: mgr.listActiveAgents(),
+      maxConcurrent: mgr.getMaxConcurrent(),
+    });
   });
 
   // 发消息
@@ -181,6 +206,17 @@ export function createChatRouter(
       return;
     }
     mgr.abort(runId);
+    res.json({ ok: true });
+  });
+
+  router.post("/sessions/:runId/close", (req, res) => {
+    const runId = req.params.runId;
+    const session = mgr.get(runId);
+    if (!session) {
+      res.status(404).json({ error: "session not found" });
+      return;
+    }
+    mgr.close(runId, "aborted");
     res.json({ ok: true });
   });
 

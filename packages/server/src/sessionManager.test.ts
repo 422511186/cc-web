@@ -27,6 +27,38 @@ function makeManager(
 }
 
 describe("SessionManager", () => {
+  it("lists active agents with metadata and status", () => {
+    const mgr = makeManager();
+
+    const newRunId = mgr.startNew(() => () => {}, "C:/workspace/a");
+    const continueRunId = mgr.startContinue("sess-1", () => () => {}, "C:/workspace/b", "proj-1");
+
+    const continued = mgr.get(continueRunId)!;
+    continued.send("继续跑");
+
+    const agents = mgr.listActiveAgents();
+    const newAgent = agents.find((agent) => agent.runId === newRunId);
+    const continueAgent = agents.find((agent) => agent.runId === continueRunId);
+
+    expect(newAgent).toMatchObject({
+      runId: newRunId,
+      kind: "new",
+      sessionId: null,
+      cwd: "C:/workspace/a",
+      status: "idle",
+    });
+    expect(continueAgent).toMatchObject({
+      runId: continueRunId,
+      kind: "continue",
+      sessionId: "sess-1",
+      projectId: "proj-1",
+      cwd: "C:/workspace/b",
+      status: "executing",
+    });
+    expect(typeof continueAgent?.createdAt).toBe("number");
+    expect(typeof continueAgent?.lastEventAt).toBe("number");
+  });
+
   it("creates a new session and returns a runId", () => {
     const mgr = makeManager();
     const runId = mgr.startNew(() => () => {});

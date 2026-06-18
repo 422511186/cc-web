@@ -70,6 +70,12 @@ export class Session {
     return this.executing || this.pending.hasAny();
   }
 
+  getStatus(): "idle" | "executing" | "waiting" {
+    if (this.pending.hasAny()) return "waiting";
+    if (this.executing) return "executing";
+    return "idle";
+  }
+
   /** 提交用户对某待答事项的回答;返回是否命中一个未决项 */
   answer(answer: PromptAnswer): boolean {
     return this.pending.settle(answer.id, answer);

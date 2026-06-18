@@ -75,7 +75,7 @@ describe('loadConfig', () => {
     const config = loadConfig();
 
     expect(config.idleTimeoutMs).toBe(3 * 60 * 1000); // 3m
-    expect(config.maxConcurrent).toBe(4);
+    expect(config.maxConcurrent).toBe(3);
     expect(config.uploadsDir).toMatch(/uploads$/);
   });
 

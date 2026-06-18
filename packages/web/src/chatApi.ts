@@ -1,4 +1,5 @@
 import type {
+  ActiveAgentsResponse,
   StartSessionResponse,
   SendMessageRequest,
   PromptAnswer,
@@ -57,6 +58,23 @@ export async function probeRun(runId: string): Promise<boolean> {
   if (res.status === 404) return false;
   if (!res.ok) throw new Error(`probeRun failed: ${res.status}`);
   return true;
+}
+
+export async function listActiveAgents(): Promise<ActiveAgentsResponse> {
+  const res = await fetch("/api/sessions/active", {
+    method: "GET",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw new Error(`listActiveAgents failed: ${res.status}`);
+  return (await res.json()) as ActiveAgentsResponse;
+}
+
+export async function closeAgent(runId: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(runId)}/close`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw new Error(`closeAgent failed: ${res.status}`);
 }
 
 /** 发一条用户消息 */

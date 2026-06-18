@@ -90,6 +90,83 @@ describe("chat routes", () => {
     expect(missing.body.error).toBe("session not found");
   });
 
+  it("GET /sessions/active returns active agents and maxConcurrent", async () => {
+    const mgr = new SessionManager({
+      client: echoClient,
+      permissionMode: "default",
+      maxConcurrent: 3,
+      idleTimeoutMs: 60_000,
+    });
+    const a = express();
+    a.use(express.json());
+    a.use("/api", createChatRouter(mgr));
+
+    const newRes = await request(a).post("/api/sessions/new").send({ cwd: "C:/p1" });
+    const continueRes = await request(a).post("/api/sessions/s-continue/continue").send({ projectId: "proj-2" });
+
+    const res = await request(a).get("/api/sessions/active");
+
+    expect(res.status).toBe(200);
+    expect(res.body.maxConcurrent).toBe(3);
+    expect(res.body.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runId: newRes.body.runId,
+          kind: "new",
+          cwd: "C:/p1",
+        }),
+        expect.objectContaining({
+          runId: continueRes.body.runId,
+          kind: "continue",
+          sessionId: "s-continue",
+          projectId: "proj-2",
+        }),
+      ])
+    );
+  });
+
+  it("POST /sessions/:runId/close forcibly closes an active agent", async () => {
+    const mgr = new SessionManager({
+      client: echoClient,
+      permissionMode: "default",
+      maxConcurrent: 3,
+      idleTimeoutMs: 60_000,
+    });
+    const closeSpy = vi.spyOn(mgr, "close");
+    const a = express();
+    a.use(express.json());
+    a.use("/api", createChatRouter(mgr));
+
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const res = await request(a).post(`/api/sessions/${runId}/close`).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(closeSpy).toHaveBeenCalledWith(runId, "aborted");
+    expect(mgr.get(runId)).toBeUndefined();
+  });
+
+  it("POST /sessions/new when maxConcurrent reached returns 409 friendly error", async () => {
+    const mgr = new SessionManager({
+      client: echoClient,
+      permissionMode: "default",
+      maxConcurrent: 1,
+      idleTimeoutMs: 60_000,
+    });
+    const a = express();
+    a.use(express.json());
+    a.use("/api", createChatRouter(mgr));
+
+    const first = await request(a).post("/api/sessions/new").send({});
+    expect(first.status).toBe(200);
+
+    const second = await request(a).post("/api/sessions/new").send({});
+    expect(second.status).toBe(409);
+    expect(second.body.error).toMatch(/max concurrent/i);
+  });
+
   it("续聊时原项目目录已不存在,返回 409 友好错误且不启动会话", async () => {
     const mgr = new SessionManager({
       client: echoClient,

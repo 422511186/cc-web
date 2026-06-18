@@ -108,11 +108,18 @@ describe('API Routes', () => {
       expect(res.body.error).toBe('Session not found');
     });
 
-    it('should return 400 when projectId missing', async () => {
-      const res = await request(app).get('/api/sessions/session1');
+    it('should pass through when projectId missing so live session routes can handle it', async () => {
+      const passThroughApp = express();
+      passThroughApp.use('/api', createRouter(mockStore, sseManager));
+      passThroughApp.get('/api/sessions/:runId', (req, res) => {
+        res.json({ runId: req.params.runId, liveRoute: true });
+      });
 
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe('projectId query parameter is required');
+      const res = await request(passThroughApp).get('/api/sessions/session1');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ runId: 'session1', liveRoute: true });
+      expect(mockStore.getSession).not.toHaveBeenCalled();
     });
   });
 

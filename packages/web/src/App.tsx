@@ -6,16 +6,23 @@ import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
 import { useSession } from './useSession';
-import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun } from './chatApi';
+import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent } from './chatApi';
 import { createApiClient } from './api';
 import type { ApiClient } from './api';
-import type { PromptAnswer, PendingPrompt, Project } from '@cc-web/shared';
+import type { ActiveAgent, PromptAnswer, PendingPrompt, Project } from '@cc-web/shared';
 import type { LiveMessage } from './useSession';
 import { QuestionCard } from './components/QuestionCard';
 import { PermissionCard } from './components/PermissionCard';
 import { PlanCard } from './components/PlanCard';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+
+function isUnauthorizedError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    return (error as { status?: unknown }).status === 401;
+  }
+  return error instanceof Error && /\b401\b/.test(error.message);
+}
 
 /** 纯新建会话视图:无历史 session,只展示实时流式消息与待答卡片 */
 function NewSessionView({ liveMessages, pending, onAnswer }: {
@@ -93,8 +100,10 @@ function App() {
   const [alertDialog, setAlertDialog] = useState<{ title: string; message: string } | null>(null);
   // 已加载的项目列表(由 Sidebar 上报),用于把正确的项目名传给 Conversation 顶栏
   const [projects, setProjects] = useState<Project[]>([]);
+  const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
+  const [maxAgents, setMaxAgents] = useState(3);
 
-  // 跟踪当前活跃 runId,供切换/卸载时主动释放旧会话(忙碌则后台保活待重连)
+  // 跟踪当前活跃 runId
   const runIdRef = useRef<string | null>(null);
   runIdRef.current = runId;
 
@@ -183,24 +192,20 @@ function App() {
   }, [forgetActiveRun]);
 
   const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
+  const isAgentLimitReached = activeAgents.length >= maxAgents;
 
-  // 释放上一个活跃会话(若有):忙碌则后台保活,空闲则回收
-  const closePrevious = useCallback(() => {
-    const prev = runIdRef.current;
-    if (!prev) return;
-
-    // 历史续聊 run 以 sessionId 作为 runId。若当前已空闲，切走时后端会立即 release 回收，
-    // 前端也应同步清掉 activeRuns，避免稍后切回时错误地尝试重接一个已结束 run。
-    if (
-      selectedSession &&
-      activeRunsRef.current.get(selectedSession.sessionId) === prev &&
-      status === 'idle'
-    ) {
-      forgetActiveRun(selectedSession.sessionId);
+  const refreshActiveAgents = useCallback(async () => {
+    try {
+      const result = await listActiveAgents();
+      setActiveAgents(result.agents);
+      setMaxAgents(result.maxConcurrent);
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        clearAuthState(apiClient);
+      }
+      // 活跃列表失败不阻塞主流程
     }
-
-    void closeSession(prev);
-  }, [forgetActiveRun, selectedSession, status]);
+  }, [apiClient, clearAuthState]);
 
   // 关闭/刷新页面时尽力关掉活跃会话
   useEffect(() => {
@@ -218,6 +223,15 @@ function App() {
     window.addEventListener('beforeunload', onUnload);
     return () => window.removeEventListener('beforeunload', onUnload);
   }, [forgetActiveRun, selectedSession, status]);
+
+  useEffect(() => {
+    if (!apiClient) return;
+    void refreshActiveAgents();
+    const timer = window.setInterval(() => {
+      void refreshActiveAgents();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [apiClient, refreshActiveAgents]);
 
   // Restore session from URL on mount
   useEffect(() => {
@@ -275,9 +289,11 @@ function App() {
   };
 
   const handleContinue = useCallback(async (sessionId: string, projectId?: string) => {
-    closePrevious(); // 续聊前释放旧会话(忙碌则后台保活)
     setContinueError(null);
     try {
+      if (isAgentLimitReached) {
+        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
+      }
       const id = await startContinue(sessionId, projectId);
       rememberActiveRun(sessionId, id); // 记录活跃 runId,供切回/刷新重连
 
@@ -289,44 +305,50 @@ function App() {
         return next;
       });
       setRunId(id);
+      await refreshActiveAgents();
     } catch (e) {
       // 原项目目录已删除等情况:续聊不可用,提示用户(历史浏览不受影响)
       setContinueError(e instanceof Error ? e.message : '续聊失败');
     }
-  }, [closePrevious, rememberActiveRun]);
+  }, [isAgentLimitReached, maxAgents, rememberActiveRun, refreshActiveAgents]);
 
   const handleNew = useCallback(async () => {
-    closePrevious(); // 新建前关掉旧的活跃会话
-
     // 弹出目录输入框
     const cwd = window.prompt('请输入工作目录路径（留空则使用默认）:', '');
     if (cwd === null) return; // 用户取消
 
     try {
+      if (isAgentLimitReached) {
+        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
+      }
       const id = await startNew(cwd || undefined);
       setRunId(id);
       setSelectedSession(null);
+      await refreshActiveAgents();
     } catch (e) {
       setAlertDialog({
         title: '新建失败',
         message: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [closePrevious]);
+  }, [isAgentLimitReached, maxAgents, refreshActiveAgents]);
 
   const handleNewWithCwd = useCallback(async (cwd: string) => {
-    closePrevious(); // 新建前关掉旧的活跃会话
     try {
+      if (isAgentLimitReached) {
+        throw new Error(`已达 ${maxAgents} 个活跃 agent 上限，请先关闭一个`);
+      }
       const id = await startNew(cwd || undefined);
       setRunId(id);
       setSelectedSession(null);
+      await refreshActiveAgents();
     } catch (e) {
       setAlertDialog({
         title: '新建失败',
         message: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [closePrevious]);
+  }, [isAgentLimitReached, maxAgents, refreshActiveAgents]);
 
   const handleSend = useCallback(
     async (text: string, attachments: string[]) => {
@@ -351,17 +373,54 @@ function App() {
     try {
       await abortSession(runId);
       setAbortSuccess(true);
+      await refreshActiveAgents();
       // 3秒后自动隐藏提示
       setTimeout(() => setAbortSuccess(false), 3000);
     } catch (e) {
       console.error('Abort failed:', e);
     }
-  }, [runId]);
+  }, [refreshActiveAgents, runId]);
+
+  const handleSelectActiveAgent = useCallback((agent: ActiveAgent) => {
+    if (agent.kind === 'continue' && agent.sessionId && agent.projectId) {
+      const nextSelection = { projectId: agent.projectId, sessionId: agent.sessionId };
+      selectedSessionRef.current = nextSelection;
+      setSelectedSession(nextSelection);
+      setRunId(agent.runId);
+      const params = new URLSearchParams();
+      params.set('project', agent.projectId);
+      params.set('session', agent.sessionId);
+      window.history.pushState({}, '', `?${params.toString()}`);
+      return;
+    }
+
+    setSelectedSession(null);
+    selectedSessionRef.current = null;
+    setRunId(agent.runId);
+    window.history.pushState({}, '', window.location.pathname);
+  }, []);
+
+  const handleCloseActiveAgent = useCallback(async (agent: ActiveAgent) => {
+    try {
+      await closeAgent(agent.runId);
+      if (agent.kind === 'continue' && agent.sessionId) {
+        forgetActiveRun(agent.sessionId);
+      }
+      if (runIdRef.current === agent.runId) {
+        setRunId(null);
+      }
+      await refreshActiveAgents();
+    } catch (e) {
+      setAlertDialog({
+        title: '关闭失败',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [forgetActiveRun, refreshActiveAgents]);
 
   const handleLogout = useCallback(() => {
-    closePrevious(); // 登出前关掉活跃会话
     clearAuthState(apiClient);
-  }, [apiClient, clearAuthState, closePrevious]);
+  }, [apiClient, clearAuthState]);
 
   useEffect(() => {
     if (
@@ -401,6 +460,10 @@ function App() {
               selectedSessionId={selectedSession?.sessionId}
               onNewSession={handleNewWithCwd}
               onProjectsLoad={setProjects}
+              activeAgents={activeAgents}
+              maxAgents={maxAgents}
+              onActiveAgentSelect={handleSelectActiveAgent}
+              onActiveAgentClose={handleCloseActiveAgent}
             />
           </div>
           <div style={{
@@ -513,14 +576,20 @@ function App() {
               )}
               {liveError && <span style={{ color: '#cf222e' }}>错误: {liveError}</span>}
               {continueError && <span style={{ color: '#cf222e' }}>{continueError}</span>}
+              {!continueError && selectedSession && !runId && isAgentLimitReached && (
+                <span style={{ color: '#cf222e' }}>已达 {maxAgents} 个活跃 agent 上限，请先关闭一个</span>
+              )}
               {abortSuccess && <span style={{ color: '#1f883d', fontWeight: 500 }}>✓ 已停止</span>}
               <span style={{ flex: 1 }} />
               {selectedSession && !runId && !continueError && (
                 <button
+                  disabled={isAgentLimitReached}
                   onClick={() => handleContinue(selectedSession.sessionId, selectedSession.projectId)}
                   style={{
                     padding: '0.35rem 0.9rem', borderRadius: 6, border: '1px solid #1976d2',
-                    background: '#fff', color: '#1976d2', cursor: 'pointer',
+                    background: isAgentLimitReached ? '#eaeef2' : '#fff',
+                    color: isAgentLimitReached ? '#6a737d' : '#1976d2',
+                    cursor: isAgentLimitReached ? 'not-allowed' : 'pointer',
                   }}
                 >
                   🔗 在此继续
