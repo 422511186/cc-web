@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createP2pCoreScaffold } from "./index.js";
+import { createPairingOffer, createTrustedDeviceStore } from "./index.js";
 
-describe("@coderelay/p2p-core scaffold", () => {
-  it("exposes the package name", () => {
-    expect(createP2pCoreScaffold().packageName).toBe("@coderelay/p2p-core");
+describe("@coderelay/p2p-core", () => {
+  it("exports device trust and pairing protocol helpers", () => {
+    expect(createTrustedDeviceStore()).toEqual({ trustedClients: [], trustedHosts: [] });
+    expect(typeof createPairingOffer).toBe("function");
   });
 });
