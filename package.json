@@ -1,19 +1,20 @@
 {
-  "name": "cc-web",
+  "name": "coderelay",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "workspaces": [
-    "packages/shared",
-    "packages/server",
-    "packages/web"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
-    "dev:server": "npm run dev --workspace @cc-web/server",
-    "dev:web": "npm run dev --workspace @cc-web/web"
+    "dev:host": "npm run dev --workspace @coderelay/host",
+    "dev:server": "npm run dev:host",
+    "dev:web": "npm run dev --workspace @coderelay/web",
+    "dev:signal": "npm run dev --workspace @coderelay/signal"
   },
   "dependencies": {
     "marked": "^18.0.5"
