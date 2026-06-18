@@ -7,11 +7,12 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const workflowPath = resolve(thisDir, "../../../.github/workflows/ci.yml");
 
 describe("GitHub Actions CI workflow", () => {
-  it("对 develop 与 master 分支的 push / pull_request 触发，并执行安装、构建、测试覆盖率校验", () => {
+  it("对 develop 与 master 分支的 push / pull_request 触发，并执行 CodeRelay 安装、结构契约、构建、覆盖率校验", () => {
     expect(existsSync(workflowPath)).toBe(true);
 
     const workflow = readFileSync(workflowPath, "utf8");
 
+    expect(workflow).toContain("name: CodeRelay CI");
     expect(workflow).toContain("push:");
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("branches:");
@@ -19,7 +20,12 @@ describe("GitHub Actions CI workflow", () => {
     expect(workflow).toContain("- master");
 
     expect(workflow).toContain("npm ci");
+    expect(workflow).toContain("npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts");
     expect(workflow).toContain("npm run build");
     expect(workflow).toContain("npm run test:coverage");
+
+    expect(workflow).not.toContain("@cc-web/");
+    expect(workflow).not.toContain("packages/server");
+    expect(workflow).not.toContain("packages/web");
   });
 });

@@ -1,4 +1,4 @@
-name: CI
+name: CodeRelay CI
 
 on:
   push:
@@ -26,6 +26,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify CodeRelay workspace contract
+        run: npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts
 
       - name: Build
         run: npm run build
