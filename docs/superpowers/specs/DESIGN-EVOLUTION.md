@@ -325,10 +325,13 @@ export type ServerEvent =
 
 **实际实现** (2026-06-18):
 - ✅ `develop` 明确保留为长期开发分支，不再在合并 PR 后自动删除
+- ✅ `master` 继续作为稳定发布分支，同样保留 CI 保护
 - ✅ 新增 `.github/workflows/ci.yml`
-- ✅ CI 只对 `develop` 触发：
+- ✅ CI 对 `develop` 与 `master` 都触发：
   - `push` 到 `develop`
+  - `push` 到 `master`
   - `pull_request` 的目标分支为 `develop`
+  - `pull_request` 的目标分支为 `master`
 - ✅ 远端校验步骤保持与本地一致：
   - `npm ci`
   - `npm run build`
@@ -338,11 +341,12 @@ export type ServerEvent =
 
 **动机**:
 1. `develop` 需要作为持续集成与日常开发的稳定落点，不能在一次 PR 合并后被顺手删掉
-2. 让“本地通过”之外，再有一层 GitHub 远端的干净环境验证
-3. 保持 CI 足够简单，先围绕主开发分支建立最可靠的反馈链路
+2. `master` 作为稳定分支，也需要与 `develop` 共享同一套自动化保护，避免“主分支反而没门禁”
+3. 让“本地通过”之外，再有一层 GitHub 远端的干净环境验证
+4. 保持一套简单清晰的 workflow，而不是把主开发分支和发布分支拆成两套容易漂移的规则
 
 **影响**:
-- 以后改动只要推到 `develop`，就会自动触发一轮完整构建与测试
+- 以后改动推到 `develop` 或 `master`，都会自动触发一轮完整构建与测试
 - 同时会校验覆盖率阈值，不再只是“测试跑完就算过”
 - 可直接用 `gh run list / view / watch` 读取 CI 结果和日志，无需手动翻网页
 

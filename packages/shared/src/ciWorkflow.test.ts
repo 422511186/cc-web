@@ -7,7 +7,7 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const workflowPath = resolve(thisDir, "../../../.github/workflows/ci.yml");
 
 describe("GitHub Actions CI workflow", () => {
-  it("只对 develop 分支的 push / pull_request 触发，并执行安装、构建、测试覆盖率校验", () => {
+  it("对 develop 与 master 分支的 push / pull_request 触发，并执行安装、构建、测试覆盖率校验", () => {
     expect(existsSync(workflowPath)).toBe(true);
 
     const workflow = readFileSync(workflowPath, "utf8");
@@ -16,7 +16,7 @@ describe("GitHub Actions CI workflow", () => {
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("branches:");
     expect(workflow).toContain("- develop");
-    expect(workflow).not.toContain("- master");
+    expect(workflow).toContain("- master");
 
     expect(workflow).toContain("npm ci");
     expect(workflow).toContain("npm run build");
