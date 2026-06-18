@@ -824,17 +824,121 @@ git add package.json package-lock.json apps packages
 git commit -m "chore: 迁移 workspace 到 CodeRelay 结构"
 ```
 
-## Task 3: 更新启动脚本和根文档
+## Task 3: 更新 CI、启动脚本和根文档
 
 **文件：**
 
+- Modify: `packages/shared/src/ciWorkflow.test.ts`
+- Modify: `.github/workflows/ci.yml`
 - Create: `start-host.bat`
 - Modify: `start-server.bat`
 - Modify: `start-web.bat`
 - Modify: `AGENTS.md`
 - Modify: `CLAUDE.md`
 
-- [ ] **步骤 1：创建 `start-host.bat`**
+- [ ] **步骤 1：先更新 GitHub Actions 契约测试**
+
+将 `packages/shared/src/ciWorkflow.test.ts` 完整替换为：
+
+```typescript
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const thisDir = dirname(fileURLToPath(import.meta.url));
+const workflowPath = resolve(thisDir, "../../../.github/workflows/ci.yml");
+
+describe("GitHub Actions CI workflow", () => {
+  it("对 develop 与 master 分支的 push / pull_request 触发，并执行 CodeRelay 安装、结构契约、构建、覆盖率校验", () => {
+    expect(existsSync(workflowPath)).toBe(true);
+
+    const workflow = readFileSync(workflowPath, "utf8");
+
+    expect(workflow).toContain("name: CodeRelay CI");
+    expect(workflow).toContain("push:");
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("branches:");
+    expect(workflow).toContain("- develop");
+    expect(workflow).toContain("- master");
+
+    expect(workflow).toContain("npm ci");
+    expect(workflow).toContain("npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts");
+    expect(workflow).toContain("npm run build");
+    expect(workflow).toContain("npm run test:coverage");
+
+    expect(workflow).not.toContain("@cc-web/");
+    expect(workflow).not.toContain("packages/server");
+    expect(workflow).not.toContain("packages/web");
+  });
+});
+```
+
+- [ ] **步骤 2：运行 CI 契约测试并确认 RED**
+
+Run:
+
+```bash
+npm test --workspace @coderelay/shared -- src/ciWorkflow.test.ts
+```
+
+预期：FAIL。失败原因应是 `.github/workflows/ci.yml` 仍使用 `name: CI`，且缺少 `npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts`。
+
+- [ ] **步骤 3：更新 `.github/workflows/ci.yml`**
+
+将 `.github/workflows/ci.yml` 完整替换为：
+
+```yaml
+name: CodeRelay CI
+
+on:
+  push:
+    branches:
+      - develop
+      - master
+  pull_request:
+    branches:
+      - develop
+      - master
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify CodeRelay workspace contract
+        run: npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts
+
+      - name: Build
+        run: npm run build
+
+      - name: Test with coverage thresholds
+        run: npm run test:coverage
+```
+
+- [ ] **步骤 4：运行 CI 契约测试并确认 GREEN**
+
+Run:
+
+```bash
+npm test --workspace @coderelay/shared -- src/ciWorkflow.test.ts
+```
+
+预期：PASS。
+
+- [ ] **步骤 5：创建 `start-host.bat`**
 
 创建 `start-host.bat`：
 
@@ -861,7 +965,7 @@ REM Start service
 npm run dev:host
 ```
 
-- [ ] **步骤 2：将 `start-server.bat` 改成兼容包装**
+- [ ] **步骤 6：将 `start-server.bat` 改成兼容包装**
 
 将 `start-server.bat` 完整替换为：
 
@@ -872,7 +976,7 @@ REM Compatibility wrapper. Prefer start-host.bat for CodeRelay Host.
 call "%~dp0start-host.bat"
 ```
 
-- [ ] **步骤 3：更新 `start-web.bat`**
+- [ ] **步骤 7：更新 `start-web.bat`**
 
 将 `start-web.bat` 完整替换为：
 
@@ -890,7 +994,7 @@ echo.
 npm run dev:web
 ```
 
-- [ ] **步骤 4：更新 `AGENTS.md` 和 `CLAUDE.md` 的命令与路径**
+- [ ] **步骤 8：更新 `AGENTS.md` 和 `CLAUDE.md` 的命令与路径**
 
 在两个文件中执行这些精确替换：
 
@@ -966,7 +1070,7 @@ cd apps/host && npx vitest run -t "should parse user messages"
 
 不要替换历史设计文档文件名，例如 `2026-06-14-cc-web-design.md`，那些是已经存在的文件名。
 
-- [ ] **步骤 5：确认根文档不再指向旧 workspace**
+- [ ] **步骤 9：确认根文档不再指向旧 workspace**
 
 Run:
 
@@ -976,13 +1080,23 @@ rg -n "packages/server|packages/web|@cc-web/server|@cc-web/web|@cc-web/shared|de
 
 预期：无匹配，除非新增一句明确说明 `dev:server` 是兼容别名。
 
-- [ ] **步骤 6：提交**
+- [ ] **步骤 10：确认 CI 和 bat 文件没有旧命名残留**
 
 Run:
 
 ```bash
-git add start-host.bat start-server.bat start-web.bat AGENTS.md CLAUDE.md
-git commit -m "docs: 更新 CodeRelay workspace 指南"
+rg -n "@cc-web|packages/server|packages/web|CC-Web|cc-web|dev:server" .github/workflows/ci.yml start-host.bat start-server.bat start-web.bat
+```
+
+预期：无匹配，除非 `start-server.bat` 的注释明确表示它是兼容 wrapper，或根脚本保留 `dev:server` 兼容别名。
+
+- [ ] **步骤 11：提交**
+
+Run:
+
+```bash
+git add .github/workflows/ci.yml packages/shared/src/ciWorkflow.test.ts start-host.bat start-server.bat start-web.bat AGENTS.md CLAUDE.md
+git commit -m "ci: 更新 CodeRelay CI 与启动脚本"
 ```
 
 ## Task 4: 全量验证
@@ -1040,6 +1154,8 @@ Spec 覆盖：
 - 覆盖 `packages/server` 与 `packages/web` 迁移到 `apps/host` 和 `apps/web`。
 - 覆盖包名从 `@cc-web/*` 改为 `@coderelay/*`。
 - 覆盖 Signal、Transport、P2P Core、Test Utils 的未来 workspace scaffold。
+- 覆盖 `.github/workflows/ci.yml` 的 CodeRelay CI 命名和 workspace contract 校验。
+- 覆盖 `start-host.bat`、`start-server.bat`、`start-web.bat` 的 CodeRelay 启动脚本迁移。
 - 通过保留 Host/Web 行为不变来保留现有 HTTP 模式。
 - 明确将 Transport 抽象、设备身份、Signal 行为、WebRTC 和 TURN 留给后续独立计划。
 
