@@ -5,7 +5,7 @@ echo Starting CC-Web Server...
 echo.
 
 REM Set environment variables
-set AUTH_TOKEN=test-token-123
+set AUTH_TOKEN=test-token-123456
 set PORT=3002
 set CLAUDE_PROJECTS_DIR=%USERPROFILE%\.claude\projects
 set PERMISSION_MODE=default

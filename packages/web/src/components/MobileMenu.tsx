@@ -85,12 +85,26 @@ export function MobileMenu({ children }: MobileMenuProps) {
               height: '32px',
               backgroundColor: 'transparent',
               border: 'none',
+              borderRadius: '6px',
               cursor: 'pointer',
-              fontSize: '1.5rem',
+              fontSize: '1.25rem',
               color: '#666',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s',
+              opacity: 0.7,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#f5f5f5';
+              e.currentTarget.style.opacity = '1';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.opacity = '0.7';
             }}
           >
-            ×
+            ✕
           </button>
         )}
       </div>

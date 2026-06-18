@@ -1,11 +1,9 @@
-import express from 'express';
 import { join } from 'path';
 import { loadConfig } from './config.js';
 import { SessionStore } from './store.js';
-import { createAuthMiddleware } from './auth.js';
-import { createRouter } from './routes.js';
 import { SSEManager } from './sse.js';
 import { SessionWatcher } from './watcher.js';
+import { createApp } from './app.js';
 
 async function main() {
   const config = loadConfig();
@@ -20,16 +18,7 @@ async function main() {
     watcher.watchProject(project.id, projectStoragePath);
   }
 
-  const app = express();
-
-  // Middleware
-  app.use(express.json());
-
-  // Auth middleware for all /api routes
-  app.use('/api', createAuthMiddleware(config.authToken));
-
-  // API routes
-  app.use('/api', createRouter(store, sseManager, config.imageCacheDir));
+  const app = createApp(config, store, sseManager);
 
   // Start server
   const server = app.listen(config.port, () => {

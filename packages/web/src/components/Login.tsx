@@ -11,12 +11,13 @@ export function Login({ onLogin }: LoginProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!token.trim()) {
+    const trimmed = token.trim();
+    if (!trimmed) {
       setError('Token is required');
       return;
     }
 
-    onLogin(token);
+    onLogin(trimmed);
   };
 
   return (

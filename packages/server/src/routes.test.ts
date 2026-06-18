@@ -18,6 +18,7 @@ describe('API Routes', () => {
       listProjects: vi.fn(),
       listSessions: vi.fn(),
       getSession: vi.fn(),
+      deleteSession: vi.fn(),
     } as any;
 
     sseManager = new SSEManager(mockStore);
@@ -107,11 +108,55 @@ describe('API Routes', () => {
       expect(res.body.error).toBe('Session not found');
     });
 
-    it('should return 400 when projectId missing', async () => {
-      const res = await request(app).get('/api/sessions/session1');
+    it('should pass through when projectId missing so live session routes can handle it', async () => {
+      const passThroughApp = express();
+      passThroughApp.use('/api', createRouter(mockStore, sseManager));
+      passThroughApp.get('/api/sessions/:runId', (req, res) => {
+        res.json({ runId: req.params.runId, liveRoute: true });
+      });
+
+      const res = await request(passThroughApp).get('/api/sessions/session1');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ runId: 'session1', liveRoute: true });
+      expect(mockStore.getSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /api/projects/:projectId/sessions/:sessionId', () => {
+    it('should delete the session and return ok', async () => {
+      vi.mocked(mockStore.deleteSession).mockResolvedValue(true);
+
+      const res = await request(app).delete(
+        '/api/projects/project1/sessions/session1'
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true });
+      expect(mockStore.deleteSession).toHaveBeenCalledWith('project1', 'session1');
+    });
+
+    it('should return 404 when the session does not exist', async () => {
+      vi.mocked(mockStore.deleteSession).mockResolvedValue(false);
+
+      const res = await request(app).delete(
+        '/api/projects/project1/sessions/nope'
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('Session not found');
+    });
+
+    it('should return 400 when the path is rejected (traversal)', async () => {
+      vi.mocked(mockStore.deleteSession).mockRejectedValue(
+        new Error('Invalid session path: path traversal detected')
+      );
+
+      const res = await request(app).delete(
+        '/api/projects/project1/sessions/whatever'
+      );
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('projectId query parameter is required');
     });
   });
 

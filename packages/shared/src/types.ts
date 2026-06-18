@@ -48,6 +48,20 @@ export interface SessionDetail extends Session {
   messages: Message[];
 }
 
+export interface ActiveAgent {
+  runId: string;
+  kind: 'new' | 'continue';
+  sessionId: string | null;
+  projectId?: string;
+  cwd?: string;
+  status: 'idle' | 'executing' | 'waiting';
+  createdAt: number;
+  lastEventAt: number;
+  attached: boolean;
+  lastHeartbeatAt: number | null;
+  leaseExpiresAt: number | null;
+}
+
 export interface SearchResult {
   sessionId: string;
   projectId: string;

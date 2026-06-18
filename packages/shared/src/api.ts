@@ -66,3 +66,37 @@ export interface SearchResponse {
     }>;
   }>;
 }
+
+export interface NewSessionRequest {
+  cwd?: string;
+}
+
+export interface NewSessionResponse {
+  runId: string;
+}
+
+export interface ActiveAgentsResponse {
+  agents: Array<{
+    runId: string;
+    kind: 'new' | 'continue';
+    sessionId: string | null;
+    projectId?: string;
+    cwd?: string;
+    status: 'idle' | 'executing' | 'waiting';
+    createdAt: number;
+    lastEventAt: number;
+    attached: boolean;
+    lastHeartbeatAt: number | null;
+    leaseExpiresAt: number | null;
+  }>;
+  maxConcurrent: number;
+}
+
+export interface SessionHeartbeatResponse {
+  ok: boolean;
+  runId: string;
+  status: 'idle' | 'executing' | 'waiting';
+  attached: boolean;
+  lastHeartbeatAt: number;
+  leaseExpiresAt: number;
+}
