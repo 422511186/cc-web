@@ -151,6 +151,236 @@ export class HttpTransport implements CodeRelayTransport {
   }
 }
 
+export interface P2PMessagePort {
+  send(message: string): void;
+  addMessageListener(listener: (message: string) => void): () => void;
+}
+
+export interface P2PTransportOptions {
+  readonly port: P2PMessagePort;
+}
+
+type P2PClientFrame =
+  | {
+      readonly type: "request";
+      readonly id: string;
+      readonly method: string;
+      readonly path: string;
+      readonly body?: unknown;
+      readonly headers?: Record<string, string>;
+    }
+  | {
+      readonly type: "stream_open";
+      readonly streamId: string;
+      readonly path: string;
+      readonly eventName?: string;
+    }
+  | {
+      readonly type: "stream_close";
+      readonly streamId: string;
+    };
+
+type P2PHostFrame =
+  | {
+      readonly type: "response";
+      readonly id: string;
+      readonly status: number;
+      readonly body?: unknown;
+    }
+  | {
+      readonly type: "stream_opened";
+      readonly streamId: string;
+    }
+  | {
+      readonly type: "stream_event";
+      readonly streamId: string;
+      readonly event: unknown;
+    }
+  | {
+      readonly type: "stream_error";
+      readonly streamId: string;
+      readonly error?: string;
+    }
+  | {
+      readonly type: "stream_closed";
+      readonly streamId: string;
+    };
+
+interface PendingP2PRequest {
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: Error) => void;
+}
+
+interface ActiveP2PStream<TEvent = unknown> {
+  readonly onEvent: (event: TEvent) => void;
+  readonly onOpen?: () => void;
+  readonly onError?: () => void;
+}
+
+export class P2PTransport implements CodeRelayTransport {
+  private nextRequestIndex = 0;
+  private nextStreamIndex = 0;
+  private readonly pendingRequests = new Map<string, PendingP2PRequest>();
+  private readonly streams = new Map<string, ActiveP2PStream>();
+
+  constructor(private readonly options: P2PTransportOptions) {
+    this.options.port.addMessageListener((message) => this.handleMessage(message));
+  }
+
+  request<TResponse, TBody = unknown>(request: TransportRequest<TBody>): Promise<TResponse> {
+    this.nextRequestIndex += 1;
+    const id = `p2p-req-${this.nextRequestIndex}`;
+    const frame: P2PClientFrame = {
+      type: "request",
+      id,
+      method: request.method ?? "GET",
+      path: request.path,
+      body: request.body,
+      headers: request.headers,
+    };
+
+    const response = new Promise<TResponse>((resolve, reject) => {
+      this.pendingRequests.set(id, {
+        resolve: (value) => resolve(value as TResponse),
+        reject,
+      });
+    });
+    this.send(frame);
+    return response;
+  }
+
+  subscribe<TEvent>(request: TransportSubscribeRequest<TEvent>): TransportStream {
+    this.nextStreamIndex += 1;
+    const streamId = `p2p-stream-${this.nextStreamIndex}`;
+    this.streams.set(streamId, {
+      onEvent: request.onEvent as (event: unknown) => void,
+      onOpen: request.onOpen,
+      onError: request.onError,
+    });
+    this.send({
+      type: "stream_open",
+      streamId,
+      path: request.path,
+      eventName: request.eventName,
+    });
+
+    return {
+      close: () => {
+        if (!this.streams.has(streamId)) {
+          return;
+        }
+        this.streams.delete(streamId);
+        this.send({ type: "stream_close", streamId });
+      },
+    };
+  }
+
+  private handleMessage(message: string): void {
+    let frame: P2PHostFrame;
+    try {
+      frame = JSON.parse(message) as P2PHostFrame;
+    } catch {
+      return;
+    }
+
+    switch (frame.type) {
+      case "response":
+        this.handleResponse(frame);
+        break;
+      case "stream_opened":
+        this.streams.get(frame.streamId)?.onOpen?.();
+        break;
+      case "stream_event":
+        this.streams.get(frame.streamId)?.onEvent(frame.event);
+        break;
+      case "stream_error":
+        this.streams.get(frame.streamId)?.onError?.();
+        break;
+      case "stream_closed":
+        this.streams.delete(frame.streamId);
+        break;
+    }
+  }
+
+  private handleResponse(frame: Extract<P2PHostFrame, { type: "response" }>): void {
+    const pending = this.pendingRequests.get(frame.id);
+    if (!pending) {
+      return;
+    }
+
+    this.pendingRequests.delete(frame.id);
+    if (frame.status >= 200 && frame.status < 300) {
+      pending.resolve(frame.body);
+      return;
+    }
+
+    pending.reject(new TransportError(readP2PError(frame.body, frame.status), frame.status));
+  }
+
+  private send(frame: P2PClientFrame): void {
+    this.options.port.send(JSON.stringify(frame));
+  }
+}
+
+export interface P2PBridgeRequest<TBody = unknown> {
+  readonly id: string;
+  readonly method: string;
+  readonly path: string;
+  readonly body?: TBody;
+  readonly headers?: Record<string, string>;
+}
+
+export interface P2PBridgeResponse<TBody = unknown> {
+  readonly status: number;
+  readonly body?: TBody;
+}
+
+export interface P2PBridgeStreamRequest {
+  readonly streamId: string;
+  readonly path: string;
+  readonly eventName?: string;
+}
+
+export interface P2PBridgeStreamSink {
+  open(): void;
+  event(event: unknown): void;
+  error(error?: string): void;
+  close(): void;
+}
+
+export interface P2PBridgeStreamHandle {
+  close(): void;
+}
+
+export interface P2PBridgeHandlers {
+  handleRequest(request: P2PBridgeRequest): Promise<P2PBridgeResponse> | P2PBridgeResponse;
+  handleStream?(
+    request: P2PBridgeStreamRequest,
+    sink: P2PBridgeStreamSink
+  ): P2PBridgeStreamHandle | Promise<P2PBridgeStreamHandle>;
+}
+
+export interface P2PBridge {
+  close(): void;
+}
+
+export function createP2PBridge(port: P2PMessagePort, handlers: P2PBridgeHandlers): P2PBridge {
+  const activeStreams = new Map<string, P2PBridgeStreamHandle>();
+  const removeListener = port.addMessageListener((message) => {
+    void handleBridgeMessage(port, handlers, activeStreams, message);
+  });
+
+  return {
+    close() {
+      removeListener();
+      for (const stream of activeStreams.values()) {
+        stream.close();
+      }
+      activeStreams.clear();
+    },
+  };
+}
+
 async function readError(response: Response): Promise<string> {
   const fallback = `HTTP ${response.status}`;
   try {
@@ -159,4 +389,112 @@ async function readError(response: Response): Promise<string> {
   } catch {
     return fallback;
   }
+}
+
+async function handleBridgeMessage(
+  port: P2PMessagePort,
+  handlers: P2PBridgeHandlers,
+  activeStreams: Map<string, P2PBridgeStreamHandle>,
+  message: string
+): Promise<void> {
+  let frame: P2PClientFrame;
+  try {
+    frame = JSON.parse(message) as P2PClientFrame;
+  } catch {
+    return;
+  }
+
+  switch (frame.type) {
+    case "request":
+      await handleBridgeRequest(port, handlers, frame);
+      break;
+    case "stream_open":
+      await handleBridgeStreamOpen(port, handlers, activeStreams, frame);
+      break;
+    case "stream_close":
+      activeStreams.get(frame.streamId)?.close();
+      activeStreams.delete(frame.streamId);
+      break;
+  }
+}
+
+async function handleBridgeRequest(
+  port: P2PMessagePort,
+  handlers: P2PBridgeHandlers,
+  frame: Extract<P2PClientFrame, { type: "request" }>
+): Promise<void> {
+  try {
+    const response = await handlers.handleRequest({
+      id: frame.id,
+      method: frame.method,
+      path: frame.path,
+      body: frame.body,
+      headers: frame.headers,
+    });
+    sendHostFrame(port, {
+      type: "response",
+      id: frame.id,
+      status: response.status,
+      body: response.body,
+    });
+  } catch (error) {
+    sendHostFrame(port, {
+      type: "response",
+      id: frame.id,
+      status: 500,
+      body: { error: error instanceof Error ? error.message : "P2P request failed" },
+    });
+  }
+}
+
+async function handleBridgeStreamOpen(
+  port: P2PMessagePort,
+  handlers: P2PBridgeHandlers,
+  activeStreams: Map<string, P2PBridgeStreamHandle>,
+  frame: Extract<P2PClientFrame, { type: "stream_open" }>
+): Promise<void> {
+  if (!handlers.handleStream) {
+    sendHostFrame(port, { type: "stream_error", streamId: frame.streamId, error: "P2P stream unsupported" });
+    return;
+  }
+
+  const sink: P2PBridgeStreamSink = {
+    open: () => sendHostFrame(port, { type: "stream_opened", streamId: frame.streamId }),
+    event: (event) => sendHostFrame(port, { type: "stream_event", streamId: frame.streamId, event }),
+    error: (error) => sendHostFrame(port, { type: "stream_error", streamId: frame.streamId, error }),
+    close: () => sendHostFrame(port, { type: "stream_closed", streamId: frame.streamId }),
+  };
+
+  try {
+    const handle = await handlers.handleStream(
+      {
+        streamId: frame.streamId,
+        path: frame.path,
+        eventName: frame.eventName,
+      },
+      sink
+    );
+    activeStreams.set(frame.streamId, handle);
+  } catch (error) {
+    sendHostFrame(port, {
+      type: "stream_error",
+      streamId: frame.streamId,
+      error: error instanceof Error ? error.message : "P2P stream failed",
+    });
+  }
+}
+
+function sendHostFrame(port: P2PMessagePort, frame: P2PHostFrame): void {
+  port.send(JSON.stringify(frame));
+}
+
+function readP2PError(body: unknown, status: number): string {
+  if (typeof body === "object" && body !== null && "error" in body) {
+    const error = (body as { error?: unknown }).error;
+    if (typeof error === "string") {
+      return error;
+    }
+  }
+
+  return `P2P ${status}`;
 }
