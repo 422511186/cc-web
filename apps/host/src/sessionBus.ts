@@ -40,6 +40,10 @@ export class SessionBus {
     return this.subscribers.size;
   }
 
+  eventCount(): number {
+    return this.log.length;
+  }
+
   publish(event: ServerEvent): void {
     this.log.push(event);
     if (this.log.length > this.maxLogEvents) {

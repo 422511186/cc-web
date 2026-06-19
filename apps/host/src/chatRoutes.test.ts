@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import path from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { createChatRouter } from "./chatRoutes.js";
 import { SessionManager } from "./sessionManager.js";
 import type { SdkClient } from "./sdk.js";
@@ -390,6 +392,30 @@ describe("chat routes", () => {
     expect(body).toContain(`"type":"turn_end"`);
   });
 
+  it("多个 SSE 订阅者同时连接同一 run 时都能收到事件", async () => {
+    const a = app();
+    const server = a.listen(0);
+    try {
+      const address = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const startRes = await request(baseUrl).post("/api/sessions/new").send({});
+      const runId = startRes.body.runId as string;
+
+      const first = openRawSse(`${baseUrl}/api/sessions/${runId}/stream`);
+      const second = openRawSse(`${baseUrl}/api/sessions/${runId}/stream`);
+      await Promise.all([first.opened, second.opened]);
+
+      await request(baseUrl).post(`/api/sessions/${runId}/message`).send({ text: "ping" });
+
+      const [firstBody, secondBody] = await Promise.all([first.done, second.done]);
+
+      expect(firstBody).toContain(`"type":"turn_end"`);
+      expect(secondBody).toContain(`"type":"turn_end"`);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("重连(再次订阅)整段重放全量事件日志,而非只给断开期间的增量", async () => {
     const a = app();
     const startRes = await request(a).post("/api/sessions/new").send({});
@@ -584,3 +610,41 @@ describe("chat routes", () => {
     });
   });
 });
+
+function openRawSse(url: string): {
+  readonly opened: Promise<void>;
+  readonly done: Promise<string>;
+} {
+  let resolveOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    resolveOpened = resolve;
+  });
+  const done = new Promise<string>((resolve, reject) => {
+    let data = "";
+    const req = http.get(url, (res) => {
+      resolveOpened();
+      const timeout = setTimeout(() => {
+        req.destroy();
+        resolve(data);
+      }, 800);
+      res.on("data", (chunk: Buffer) => {
+        data += chunk.toString();
+        if (data.includes(`"type":"turn_end"`)) {
+          clearTimeout(timeout);
+          req.destroy();
+          resolve(data);
+        }
+      });
+      res.on("error", reject);
+      res.on("end", () => {
+        clearTimeout(timeout);
+        resolve(data);
+      });
+    });
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNRESET") return;
+      reject(error);
+    });
+  });
+  return { opened, done };
+}

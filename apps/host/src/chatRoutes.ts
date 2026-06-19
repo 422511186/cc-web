@@ -9,13 +9,11 @@ import type {
 import type { SessionManager } from "./sessionManager.js";
 import { SseChannel } from "./sseChannel.js";
 import path from "node:path";
+import { SessionBus } from "./sessionBus.js";
 
-/** 每个 runId 的 append-only 事件日志 + 可选当前 SSE 通道 */
+/** 每个 runId 的 append-only 事件日志 + 多订阅者事件总线 */
 interface Hub {
-  /** 全量事件日志(永不清空,直到会话结束且无人连接才丢弃)。
-   *  支持重连时整段重放,让切走再切回的前端能从零重建完整状态。 */
-  log: ServerEvent[];
-  channel: SseChannel | null;
+  bus: SessionBus;
   /** 会话是否已结束(收到 closed 事件) */
   closed: boolean;
   /** 会话结束且无连接时的宽限清理计时器,留出重连窗口 */
@@ -71,7 +69,11 @@ export function createChatRouter(
   function hubFor(runId: string): Hub {
     let hub = hubs.get(runId);
     if (!hub) {
-      hub = { log: [], channel: null, closed: false, graceTimer: null };
+      hub = {
+        bus: new SessionBus({ runId, maxLogEvents: MAX_LOG_EVENTS }),
+        closed: false,
+        graceTimer: null,
+      };
       hubs.set(runId, hub);
     }
     return hub;
@@ -101,16 +103,7 @@ export function createChatRouter(
   function makeOnEvent(runId: string) {
     return (event: ServerEvent) => {
       const hub = hubFor(runId);
-      hub.log.push(event);
-
-      // 防止长会话内存泄漏:超过上限时截断保留最新事件
-      if (hub.log.length > MAX_LOG_EVENTS) {
-        hub.log.splice(0, hub.log.length - MAX_LOG_EVENTS);
-      }
-
-      if (hub.channel) {
-        hub.channel.send(event);
-      }
+      hub.bus.publish(event);
       // 会话结束:标记 closed,保留 hub 与日志一段宽限期,
       // 让切走再切回的前端还能重连整段重放。
       // 修复 P2-B3:无论是否有连接都预约清理,有连接时由 onClose 取消并重启。
@@ -359,26 +352,27 @@ export function createChatRouter(
     recordDebug("server", {
       event: "server.stream-open",
       runId,
-      replayCount: hub.log.length,
+      replayCount: hub.bus.eventCount(),
       active: Boolean(mgr.get(runId)),
       closed: hub.closed,
     });
     // 整段重放全量日志(支持切走再切回的重连),日志不清空
-    for (const event of hub.log) channel.send(event);
+    const subscriberId = `${runId}:${Date.now()}:${Math.random()}`;
+    const unsubscribe = hub.bus.subscribe(subscriberId, (event) => channel.send(event));
 
     const heartbeat = setInterval(() => channel.heartbeat(), 15_000);
     channel.onClose(() => {
       clearInterval(heartbeat);
-      if (hub.channel === channel) hub.channel = null;
+      unsubscribe();
       recordDebug("server", {
         event: "server.stream-close",
         runId,
-        replayCount: hub.log.length,
+        replayCount: hub.bus.eventCount(),
         active: Boolean(mgr.get(runId)),
         closed: hub.closed,
       });
       // 会话已结束且无人再连接:启动宽限清理,留出重连窗口后回收 hub
-      if (hub.closed && !hub.channel && !hub.graceTimer) {
+      if (hub.closed && hub.bus.subscriberCount() === 0 && !hub.graceTimer) {
         hub.graceTimer = setTimeout(() => hubs.delete(runId), HUB_GRACE_MS);
       }
     });
