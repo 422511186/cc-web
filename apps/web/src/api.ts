@@ -5,12 +5,18 @@ import type {
   SearchResponse,
 } from '@coderelay/shared';
 import { HttpTransport, type CodeRelayTransport, type TransportStream } from '@coderelay/transport';
+import type { BrowserPairingOffer } from './p2pClient';
 
 const API_BASE = '/api';
 
 interface SSESessionUpdate {
   projectId: string;
   sessionId: string;
+}
+
+export interface P2PPairingResponse {
+  readonly offer: BrowserPairingOffer;
+  readonly pairingUrl: string;
 }
 
 class ApiClient {
@@ -40,7 +46,7 @@ class ApiClient {
       method: string;
       path: string;
       headers?: Record<string, string>;
-      body?: BodyInit | null;
+      body?: unknown;
       keepalive?: boolean;
     };
     if (Object.keys(headers).length > 0) request.headers = headers;
@@ -83,6 +89,13 @@ class ApiClient {
     return `${API_BASE}/image?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(this.token)}`;
   }
 
+  async getImageDataUrl(filePath: string): Promise<string> {
+    const response = await this.request<{ dataUrl: string }>(
+      `/image-data?path=${encodeURIComponent(filePath)}`
+    );
+    return response.dataUrl;
+  }
+
   connectSSE(onSessionUpdate: (update: SSESessionUpdate) => void): () => void {
     // Close existing connection if any
     this.disconnect();
@@ -101,6 +114,13 @@ class ApiClient {
   disconnect(): void {
     this.stream?.close();
     this.stream = null;
+  }
+
+  async openP2PPairing(): Promise<P2PPairingResponse> {
+    return this.request<P2PPairingResponse>('/p2p/pairing', {
+      method: 'POST',
+      body: {} as BodyInit,
+    });
   }
 }
 

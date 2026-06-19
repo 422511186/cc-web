@@ -206,6 +206,27 @@ type P2PHostFrame =
       readonly streamId: string;
     };
 
+interface P2PSerializedFormDataBody {
+  readonly __coderelayTransportBody: "form-data-v1";
+  readonly fields: readonly P2PSerializedFormDataField[];
+}
+
+type P2PSerializedBody = P2PSerializedFormDataBody | unknown;
+
+type P2PSerializedFormDataField =
+  | {
+      readonly kind: "field";
+      readonly name: string;
+      readonly value: string;
+    }
+  | {
+      readonly kind: "file";
+      readonly name: string;
+      readonly filename: string;
+      readonly contentType: string;
+      readonly base64: string;
+    };
+
 interface PendingP2PRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
@@ -230,14 +251,6 @@ export class P2PTransport implements CodeRelayTransport {
   request<TResponse, TBody = unknown>(request: TransportRequest<TBody>): Promise<TResponse> {
     this.nextRequestIndex += 1;
     const id = `p2p-req-${this.nextRequestIndex}`;
-    const frame: P2PClientFrame = {
-      type: "request",
-      id,
-      method: request.method ?? "GET",
-      path: request.path,
-      body: request.body,
-      headers: request.headers,
-    };
 
     const response = new Promise<TResponse>((resolve, reject) => {
       this.pendingRequests.set(id, {
@@ -245,7 +258,23 @@ export class P2PTransport implements CodeRelayTransport {
         reject,
       });
     });
-    this.send(frame);
+    void serializeP2PBody(request.body)
+      .then((body) => {
+        this.send({
+          type: "request",
+          id,
+          method: request.method ?? "GET",
+          path: request.path,
+          body,
+          headers: request.headers,
+        });
+      })
+      .catch((error: unknown) => {
+        const pending = this.pendingRequests.get(id);
+        if (!pending) return;
+        this.pendingRequests.delete(id);
+        pending.reject(error instanceof Error ? error : new Error("Failed to serialize P2P request body"));
+      });
     return response;
   }
 
@@ -428,7 +457,7 @@ async function handleBridgeRequest(
       id: frame.id,
       method: frame.method,
       path: frame.path,
-      body: frame.body,
+      body: deserializeP2PBody(frame.body),
       headers: frame.headers,
     });
     sendHostFrame(port, {
@@ -497,4 +526,94 @@ function readP2PError(body: unknown, status: number): string {
   }
 
   return `P2P ${status}`;
+}
+
+async function serializeP2PBody(body: unknown): Promise<P2PSerializedBody> {
+  if (!isFormData(body)) {
+    return body;
+  }
+
+  const fields: P2PSerializedFormDataField[] = [];
+  for (const [name, value] of body.entries()) {
+    if (typeof value === "string") {
+      fields.push({ kind: "field", name, value });
+      continue;
+    }
+
+    const file = value as File;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    fields.push({
+      kind: "file",
+      name,
+      filename: typeof file.name === "string" && file.name ? file.name : "blob",
+      contentType: file.type || "application/octet-stream",
+      base64: bytesToBase64(bytes),
+    });
+  }
+
+  return {
+    __coderelayTransportBody: "form-data-v1",
+    fields,
+  };
+}
+
+function deserializeP2PBody(body: unknown): unknown {
+  if (!isSerializedFormDataBody(body)) {
+    return body;
+  }
+
+  const form = new FormData();
+  for (const field of body.fields) {
+    if (field.kind === "field") {
+      form.append(field.name, field.value);
+      continue;
+    }
+
+    const blob = new Blob([toArrayBuffer(base64ToBytes(field.base64))], { type: field.contentType });
+    if (typeof File === "function") {
+      form.append(field.name, new File([blob], field.filename, { type: field.contentType }));
+    } else {
+      form.append(field.name, blob, field.filename);
+    }
+  }
+  return form;
+}
+
+function isFormData(value: unknown): value is FormData {
+  return typeof FormData === "function" && value instanceof FormData;
+}
+
+function isSerializedFormDataBody(
+  value: unknown
+): value is P2PSerializedFormDataBody {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __coderelayTransportBody?: unknown }).__coderelayTransportBody === "form-data-v1" &&
+    Array.isArray((value as { fields?: unknown }).fields)
+  );
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
 }

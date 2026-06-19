@@ -23,7 +23,10 @@ function makeSession(messages: unknown[]) {
 
 let sseCallback: ((u: { projectId: string; sessionId: string }) => void) | null;
 
-function makeApiClient(getSession: ReturnType<typeof vi.fn>): ApiClient {
+function makeApiClient(
+  getSession: ReturnType<typeof vi.fn>,
+  overrides: Partial<ApiClient> = {}
+): ApiClient {
   sseCallback = null;
   return {
     getSession,
@@ -32,6 +35,8 @@ function makeApiClient(getSession: ReturnType<typeof vi.fn>): ApiClient {
       return () => {};
     },
     imageUrl: (p: string) => p,
+    getImageDataUrl: (p: string) => Promise.resolve(`data:image/png;base64,${btoa(p)}`),
+    ...overrides,
   } as unknown as ApiClient;
 }
 
@@ -296,6 +301,39 @@ describe('Conversation 长列表虚拟滚动', () => {
 });
 
 describe('Conversation 文档附件打开容错', () => {
+  test('本地图片路径应通过 ApiClient 加载 data URL 以支持 P2PTransport', async () => {
+    const getSession = vi.fn().mockResolvedValue(
+      makeSession([
+        {
+          role: 'user',
+          content: '请看图片',
+          timestamp: Date.now(),
+          metadata: {
+            imagePaths: ['C:/Users/huang/.claude/image-cache/shot.png'],
+          },
+        },
+      ])
+    );
+    const getImageDataUrl = vi.fn().mockResolvedValue('data:image/png;base64,abc123');
+    const imageUrl = vi.fn(() => {
+      throw new Error('imageUrl should not be used for transport-backed images');
+    });
+    const apiClient = makeApiClient(getSession, { getImageDataUrl, imageUrl } as Partial<ApiClient>);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+      />
+    );
+
+    const image = await screen.findByAltText('Image 1');
+    expect(image).toHaveAttribute('src', 'data:image/png;base64,abc123');
+    expect(getImageDataUrl).toHaveBeenCalledWith('C:/Users/huang/.claude/image-cache/shot.png');
+    expect(imageUrl).not.toHaveBeenCalled();
+  });
+
   test('文档 base64 损坏时点击附件不应抛错', async () => {
     const getSession = vi.fn().mockResolvedValue(
       makeSession([

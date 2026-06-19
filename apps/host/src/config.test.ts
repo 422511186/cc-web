@@ -100,6 +100,54 @@ describe('loadConfig', () => {
     expect(config.uploadsDir).toBe('/tmp/up');
   });
 
+  it('parses P2P Signal and Web runtime options from env', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    process.env.P2P_SIGNAL_URL = 'ws://signal.example.test/';
+    process.env.P2P_HOST_ID = 'host-custom';
+    process.env.P2P_WEB_URL = 'https://web.example.test/app';
+    process.env.P2P_ICE_LOCAL_ADDRESS = '172.30.1.2,127.0.0.1';
+    process.env.P2P_PAIRING_TTL_MS = '300000';
+    process.env.P2P_STATE_FILE = '/tmp/coderelay-p2p-state.json';
+
+    const config = loadConfig();
+
+    expect(config.p2p).toEqual({
+      enabled: true,
+      signalUrl: 'ws://signal.example.test/',
+      hostId: 'host-custom',
+      webUrl: 'https://web.example.test/app',
+      iceLocalAddresses: ['172.30.1.2', '127.0.0.1'],
+      pairingTtlMs: 300000,
+      stateFile: '/tmp/coderelay-p2p-state.json',
+    });
+  });
+
+  it('keeps P2P disabled when no Signal URL is configured', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    delete process.env.P2P_SIGNAL_URL;
+    delete process.env.CODERELAY_SIGNAL_URL;
+
+    const config = loadConfig();
+
+    expect(config.p2p.enabled).toBe(false);
+  });
+
+  it('defaults P2P pairing web URL to the Web dev port instead of the Host API port', () => {
+    process.env.AUTH_TOKEN = 'token-1234567890';
+    process.env.PORT = '3002';
+    process.env.P2P_SIGNAL_URL = 'ws://signal.example.test/';
+    delete process.env.P2P_WEB_URL;
+
+    const config = loadConfig();
+
+    expect(config.p2p).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        webUrl: 'http://127.0.0.1:3000',
+      })
+    );
+  });
+
   it('should reject invalid PERMISSION_MODE', () => {
     process.env.AUTH_TOKEN = 'token-1234567890';
     process.env.PERMISSION_MODE = 'god-mode';

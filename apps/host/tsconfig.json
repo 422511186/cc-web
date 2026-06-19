@@ -9,6 +9,7 @@
   "exclude": ["src/**/*.test.ts"],
   "references": [
     { "path": "../../packages/shared" },
-    { "path": "../../packages/transport" }
+    { "path": "../../packages/transport" },
+    { "path": "../../packages/p2p-core" }
   ]
 }

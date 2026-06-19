@@ -7,7 +7,7 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const workflowPath = resolve(thisDir, "../../../.github/workflows/ci.yml");
 
 describe("GitHub Actions CI workflow", () => {
-  it("对 develop 与 master 分支的 push / pull_request 触发，并执行 CodeRelay 安装、结构契约、构建、覆盖率校验", () => {
+  it("对 develop 与 master 分支的 push / pull_request 触发，并执行 CodeRelay 安装、结构契约、构建、覆盖率与 e2e 校验", () => {
     expect(existsSync(workflowPath)).toBe(true);
 
     const workflow = readFileSync(workflowPath, "utf8");
@@ -23,6 +23,8 @@ describe("GitHub Actions CI workflow", () => {
     expect(workflow).toContain("npm test --workspace @coderelay/shared -- src/coverageConfig.test.ts");
     expect(workflow).toContain("npm run build");
     expect(workflow).toContain("npm run test:coverage");
+    expect(workflow).toContain("npx playwright install --with-deps chromium");
+    expect(workflow).toContain("npm run test:e2e");
 
     const legacyScopePrefix = `${["@cc", "web"].join("-")}/`;
     const legacyWorkspacePath = (name: string) => ["packages", name].join("/");

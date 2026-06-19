@@ -21,6 +21,7 @@
   "exclude": ["src/**/*.test.tsx", "src/**/*.test.ts", "src/test"],
   "references": [
     { "path": "../../packages/shared" },
-    { "path": "../../packages/transport" }
+    { "path": "../../packages/transport" },
+    { "path": "../../packages/p2p-core" }
   ]
 }

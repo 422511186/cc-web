@@ -63,6 +63,14 @@ interface PendingConnectionRequest {
   readonly clientSession: SignalSessionImpl;
 }
 
+interface PendingPairingRequest {
+  readonly requestId: string;
+  readonly hostId: string;
+  readonly clientId: string;
+  readonly hostSession: SignalSessionImpl;
+  readonly clientSession: SignalSessionImpl;
+}
+
 interface AcceptedConnection {
   readonly connectionId: string;
   readonly hostId: string;
@@ -77,6 +85,7 @@ export class SignalHub {
   private nextSessionIndex = 0;
   private readonly hosts = new Map<string, HostRegistration>();
   private readonly pairings = new Map<string, PairingRegistration>();
+  private readonly pendingPairings = new Map<string, PendingPairingRequest>();
   private readonly pendingConnections = new Map<string, PendingConnectionRequest>();
   private readonly acceptedConnections = new Map<string, AcceptedConnection>();
 
@@ -113,8 +122,20 @@ export class SignalHub {
       case "pairing.request":
         this.handlePairingRequest(session, message);
         break;
+      case "pairing.accept":
+        this.handlePairingAccept(session, message);
+        break;
+      case "pairing.reject":
+        this.handlePairingReject(session, message);
+        break;
       case "client.connect":
         this.handleClientConnect(session, message);
+        break;
+      case "connection.challenge":
+        this.handleConnectionChallenge(session, message);
+        break;
+      case "connection.challenge_response":
+        this.handleConnectionChallengeResponse(session, message);
         break;
       case "connection.accept":
         this.handleConnectionAccept(session, message);
@@ -145,6 +166,12 @@ export class SignalHub {
     for (const [requestId, request] of this.pendingConnections) {
       if (request.hostSession === session || request.clientSession === session) {
         this.pendingConnections.delete(requestId);
+      }
+    }
+
+    for (const [requestId, request] of this.pendingPairings) {
+      if (request.hostSession === session || request.clientSession === session) {
+        this.pendingPairings.delete(requestId);
       }
     }
 
@@ -194,7 +221,8 @@ export class SignalHub {
   private handlePairingRequest(session: SignalSessionImpl, message: SignalInboundMessage): void {
     const requestId = stringField(message, "requestId");
     const pairingId = stringField(message, "pairingId");
-    if (!pairingId) {
+    const clientId = stringField(message, "clientId");
+    if (!requestId || !pairingId || !clientId) {
       this.sendError(session, requestId, "invalid_message");
       return;
     }
@@ -217,11 +245,66 @@ export class SignalHub {
       return;
     }
 
+    this.pendingPairings.set(requestId, {
+      requestId,
+      hostId: pairing.hostId,
+      clientId,
+      hostSession: host.session,
+      clientSession: session,
+    });
     host.session.send({
       ...message,
       type: "pairing.request",
       hostId: pairing.hostId,
       pairingId: pairing.pairingId,
+    });
+  }
+
+  private handlePairingAccept(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const hostId = stringField(message, "hostId");
+    const clientId = stringField(message, "clientId");
+    if (!requestId || !hostId || !clientId) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pending = this.pendingPairings.get(requestId);
+    if (!pending || pending.hostSession !== session || pending.hostId !== hostId || pending.clientId !== clientId) {
+      this.sendError(session, requestId, "pairing_not_found");
+      return;
+    }
+
+    this.pendingPairings.delete(requestId);
+    pending.clientSession.send({
+      type: "pairing.accepted",
+      requestId,
+      hostId,
+      clientId,
+    });
+  }
+
+  private handlePairingReject(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const reason = stringField(message, "reason") ?? "pairing_rejected";
+    if (!requestId) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pending = this.pendingPairings.get(requestId);
+    if (!pending || pending.hostSession !== session) {
+      this.sendError(session, requestId, "pairing_not_found");
+      return;
+    }
+
+    this.pendingPairings.delete(requestId);
+    pending.clientSession.send({
+      type: "pairing.rejected",
+      requestId,
+      hostId: pending.hostId,
+      clientId: pending.clientId,
+      reason,
     });
   }
 
@@ -248,13 +331,15 @@ export class SignalHub {
       hostSession: host.session,
       clientSession: session,
     });
-    host.session.send({
+    const outbound: SignalOutboundMessage = {
       type: "client.connect",
       requestId,
       hostId,
       clientId,
       clientPublicKeyFingerprint,
-    });
+    };
+    copyIfPresent(message, outbound, "clientPublicKeyJwk");
+    host.session.send(outbound);
   }
 
   private handleConnectionAccept(session: SignalSessionImpl, message: SignalInboundMessage): void {
@@ -286,6 +371,56 @@ export class SignalHub {
       connectionId,
       hostId: pending.hostId,
       clientId: pending.clientId,
+    });
+  }
+
+  private handleConnectionChallenge(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const hostId = stringField(message, "hostId");
+    const clientId = stringField(message, "clientId");
+    const challenge = message.challenge;
+    if (!requestId || !hostId || !clientId || !challenge) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pending = this.pendingConnections.get(requestId);
+    if (!pending || pending.hostSession !== session || pending.hostId !== hostId || pending.clientId !== clientId) {
+      this.sendError(session, requestId, "connection_not_found");
+      return;
+    }
+
+    pending.clientSession.send({
+      type: "connection.challenge",
+      requestId,
+      hostId,
+      clientId,
+      challenge,
+    });
+  }
+
+  private handleConnectionChallengeResponse(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const hostId = stringField(message, "hostId");
+    const clientId = stringField(message, "clientId");
+    const proof = message.proof;
+    if (!requestId || !hostId || !clientId || !proof) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pending = this.pendingConnections.get(requestId);
+    if (!pending || pending.clientSession !== session || pending.hostId !== hostId || pending.clientId !== clientId) {
+      this.sendError(session, requestId, "connection_not_found");
+      return;
+    }
+
+    pending.hostSession.send({
+      type: "connection.challenge_response",
+      requestId,
+      hostId,
+      clientId,
+      proof,
     });
   }
 
@@ -380,6 +515,18 @@ export async function startSignalServer(options: StartSignalServerOptions = {}):
   const path = options.path ?? "/";
   const hub = options.hub ?? createSignalHub(options);
   const httpServer = options.server ?? createServer();
+  httpServer.on("request", (req, res) => {
+    if (req.method === "GET" && req.url === "/healthz") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, service: "coderelay-signal" }));
+      return;
+    }
+
+    if (!res.headersSent) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+    }
+  });
   const webSocketServer = new WebSocketServer({ server: httpServer, path });
 
   webSocketServer.on("connection", (socket) => {

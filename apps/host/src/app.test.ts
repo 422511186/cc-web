@@ -136,4 +136,88 @@ describe("createApp", () => {
       rmSync(cfg.uploadsDir, { recursive: true, force: true });
     }
   });
+
+  it("exposes P2P pairing endpoints through the authenticated API", async () => {
+    const cfg = baseConfig();
+    const p2pRuntime = {
+      getStatus: vi.fn(() => ({
+        enabled: true,
+        signalStatus: "connected",
+        peerStatus: "disconnected",
+        hostId: "host-test",
+        signalUrl: "ws://signal.test/",
+      })),
+      openPairing: vi.fn(() => ({
+        offer: {
+          protocol: "coderelay-pairing-v1",
+          webUrl: "http://web.test/",
+          signalUrl: "ws://signal.test/",
+          hostId: "host-test",
+          hostPublicKeyJwk: { kty: "EC", crv: "P-256", x: "host-x", y: "host-y" },
+          hostPublicKeyFingerprint: "host-fingerprint",
+          pairingId: "pair-test",
+          pairingSecret: "secret-test",
+          expiresAt: "2026-06-19T00:05:00.000Z",
+        },
+        pairingUrl: "http://web.test/?p2p=encoded",
+      })),
+    };
+    const app = createApp(cfg, mockStore(), undefined, idleClient, p2pRuntime);
+
+    try {
+      const statusRes = await request(app)
+        .get("/api/p2p/status")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body).toEqual({
+        enabled: true,
+        signalStatus: "connected",
+        peerStatus: "disconnected",
+        hostId: "host-test",
+        signalUrl: "ws://signal.test/",
+      });
+
+      const pairingRes = await request(app)
+        .post("/api/p2p/pairing")
+        .set("Authorization", `Bearer ${cfg.authToken}`)
+        .set("Origin", "http://web.test")
+        .send({});
+      expect(pairingRes.status).toBe(200);
+      expect(pairingRes.body.pairingUrl).toBe("http://web.test/?p2p=encoded");
+      expect(pairingRes.body.offer).toEqual(
+        expect.objectContaining({
+          protocol: "coderelay-pairing-v1",
+          hostId: "host-test",
+          pairingId: "pair-test",
+        })
+      );
+      expect(p2pRuntime.openPairing).toHaveBeenCalledWith({
+        webUrl: "http://web.test",
+      });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports P2P disabled when Host runtime is not configured", async () => {
+    const cfg = baseConfig();
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+
+    try {
+      const statusRes = await request(app)
+        .get("/api/p2p/status")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body).toEqual({ enabled: false });
+
+      const pairingRes = await request(app)
+        .post("/api/p2p/pairing")
+        .set("Authorization", `Bearer ${cfg.authToken}`)
+        .send({});
+      expect(pairingRes.status).toBe(503);
+      expect(pairingRes.body).toEqual({ error: "P2P runtime is not enabled" });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
 });

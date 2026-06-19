@@ -109,43 +109,70 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager, image
   // GET /api/image?path=<abs-path> - serve a pasted image from the image cache.
   // Access is constrained to imageCacheDir to prevent path traversal.
   router.get('/image', (req, res) => {
-    if (!imageCacheDir) {
-      res.status(404).json({ error: 'Image serving not configured' });
+    const image = resolveImageRequest(imageCacheDir, req.query.path);
+    if (!image.ok) {
+      res.status(image.status).json({ error: image.error });
       return;
     }
 
-    const requested = req.query.path;
-    if (!requested || typeof requested !== 'string') {
-      res.status(400).json({ error: 'path query parameter is required' });
-      return;
-    }
-
-    // Resolve and confirm the path stays within the image cache directory.
-    const resolved = path.resolve(requested);
-    const cacheRoot = path.resolve(imageCacheDir);
-    const rel = path.relative(cacheRoot, resolved);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      res.status(403).json({ error: 'Forbidden' });
-      return;
-    }
-
-    const ext = path.extname(resolved).toLowerCase();
-    const contentType = IMAGE_CONTENT_TYPES[ext];
-    if (!contentType) {
-      res.status(415).json({ error: 'Unsupported image type' });
-      return;
-    }
-
-    fs.stat(resolved, (err, stats) => {
+    fs.stat(image.resolved, (err, stats) => {
       if (err || !stats.isFile()) {
         res.status(404).json({ error: 'Image not found' });
         return;
       }
-      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Type', image.contentType);
       res.setHeader('Cache-Control', 'private, max-age=86400');
-      fs.createReadStream(resolved).pipe(res);
+      fs.createReadStream(image.resolved).pipe(res);
+    });
+  });
+
+  // GET /api/image-data?path=<abs-path> - JSON data URL variant for P2PTransport.
+  router.get('/image-data', (req, res) => {
+    const image = resolveImageRequest(imageCacheDir, req.query.path);
+    if (!image.ok) {
+      res.status(image.status).json({ error: image.error });
+      return;
+    }
+
+    fs.readFile(image.resolved, (err, data) => {
+      if (err) {
+        res.status(404).json({ error: 'Image not found' });
+        return;
+      }
+      res.json({
+        dataUrl: `data:${image.contentType};base64,${data.toString('base64')}`,
+      });
     });
   });
 
   return router;
+}
+
+type ResolvedImageRequest =
+  | { ok: true; resolved: string; contentType: string }
+  | { ok: false; status: number; error: string };
+
+function resolveImageRequest(imageCacheDir: string | undefined, requested: unknown): ResolvedImageRequest {
+  if (!imageCacheDir) {
+    return { ok: false, status: 404, error: 'Image serving not configured' };
+  }
+
+  if (!requested || typeof requested !== 'string') {
+    return { ok: false, status: 400, error: 'path query parameter is required' };
+  }
+
+  const resolved = path.resolve(requested);
+  const cacheRoot = path.resolve(imageCacheDir);
+  const rel = path.relative(cacheRoot, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { ok: false, status: 403, error: 'Forbidden' };
+  }
+
+  const ext = path.extname(resolved).toLowerCase();
+  const contentType = IMAGE_CONTENT_TYPES[ext];
+  if (!contentType) {
+    return { ok: false, status: 415, error: 'Unsupported image type' };
+  }
+
+  return { ok: true, resolved, contentType };
 }

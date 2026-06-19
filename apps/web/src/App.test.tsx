@@ -4,12 +4,26 @@ import App from './App';
 import { createApiClient } from './api';
 import { clientLog } from './diagnostics';
 import type { ActiveAgent } from '@coderelay/shared';
+import type { CodeRelayTransport } from '@coderelay/transport';
 
 const mockDisconnect = vi.fn();
+const mockOpenP2PPairing = vi.fn();
 const mockApiClient = {
   disconnect: mockDisconnect,
+  openP2PPairing: mockOpenP2PPairing,
 };
 let unauthorizedHandler: (() => void) | undefined;
+let mockCurrentPairingOffer: unknown = null;
+const mockP2PTransport = {
+  request: vi.fn(),
+  subscribe: vi.fn(),
+} satisfies CodeRelayTransport;
+const mockP2PSession = {
+  transport: mockP2PTransport,
+  connectionId: 'conn-test',
+  clientId: 'client-phone',
+  close: vi.fn(),
+};
 
 vi.mock('./api', async () => {
   const actual = await vi.importActual<typeof import('./api')>('./api');
@@ -68,6 +82,7 @@ vi.mock('./components/Conversation', () => ({
 }));
 
 vi.mock('./chatApi', () => ({
+  setChatTransport: vi.fn(),
   startContinue: vi.fn((sessionId: string) => Promise.resolve(sessionId)),
   startNew: vi.fn(() => Promise.resolve('run-1')),
   sendMessage: vi.fn(),
@@ -89,6 +104,18 @@ vi.mock('./chatApi', () => ({
 
 vi.mock('./diagnostics', () => ({
   clientLog: vi.fn(),
+  setDiagnosticsTransport: vi.fn(),
+}));
+
+vi.mock('./p2pClient', () => ({
+  currentPairingOffer: vi.fn(() => mockCurrentPairingOffer),
+  connectBrowserP2P: vi.fn(() => Promise.resolve(mockP2PSession)),
+}));
+
+vi.mock('qrcode', () => ({
+  default: {
+    toDataURL: vi.fn(() => Promise.resolve('data:image/png;base64,qr')),
+  },
 }));
 
 // 可控的 useSession mock:各测试可改写 sessionState 来驱动状态栏文案
@@ -106,6 +133,21 @@ let sessionState: {
 beforeEach(() => {
   vi.clearAllMocks();
   unauthorizedHandler = undefined;
+  mockCurrentPairingOffer = null;
+  mockOpenP2PPairing.mockResolvedValue({
+    offer: {
+      protocol: 'coderelay-pairing-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      pairingId: 'pair-test',
+      pairingSecret: 'secret-test',
+      expiresAt: '2026-06-19T00:02:00.000Z',
+    },
+    pairingUrl: 'http://web.test/?p2p=encoded',
+  });
   sessionState = {
     messages: [],
     pending: null,
@@ -119,6 +161,7 @@ beforeEach(() => {
   };
 });
 vi.mock('./useSession', () => ({
+  setSessionTransport: vi.fn(),
   useSession: () => sessionState,
 }));
 
@@ -290,6 +333,18 @@ describe('App 退出登录', () => {
     expect(mockDisconnect).toHaveBeenCalledTimes(1);
   });
 
+  test('后台运行刷新结果未变化时不应产生额外异步状态更新警告', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    Storage.prototype.getItem = vi.fn(() => 'test-token');
+
+    render(<App />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const messages = errorSpy.mock.calls.map((call) => String(call[0]));
+    expect(messages.some((message) => message.includes('not wrapped in act'))).toBe(false);
+    errorSpy.mockRestore();
+  });
+
   test('退出登录按钮在侧栏内且有合理样式(非简陋灰按钮)', () => {
     Storage.prototype.getItem = vi.fn(() => 'test-token');
     const { container } = render(<App />);
@@ -306,6 +361,57 @@ describe('App 退出登录', () => {
     expect(styles.color).not.toBe('rgb(102, 102, 102)');
     // 应该有红色主题（警示色）
     expect(styles.color).toBe('rgb(220, 53, 69)'); // #dc3545
+  });
+});
+
+describe('App P2P 配对与传输切换', () => {
+  beforeEach(() => {
+    window.history.pushState({}, '', window.location.pathname);
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'authToken') return 'test-token';
+      return null;
+    });
+    Storage.prototype.setItem = vi.fn();
+    Storage.prototype.removeItem = vi.fn();
+  });
+
+  test('点击添加设备后显示 Host 生成的配对链接和二维码', async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '添加设备' }));
+
+    expect(mockOpenP2PPairing).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('dialog', { name: '添加设备' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('http://web.test/?p2p=encoded')).toBeInTheDocument();
+    expect(await screen.findByAltText('配对二维码')).toHaveAttribute('src', 'data:image/png;base64,qr');
+  });
+
+  test('扫码链接进入后连接 P2P 并把业务请求切到 P2PTransport', async () => {
+    const chatApi = await import('./chatApi');
+    const sessionModule = await import('./useSession');
+    const diagnostics = await import('./diagnostics');
+    const p2pClient = await import('./p2pClient');
+    mockCurrentPairingOffer = {
+      protocol: 'coderelay-pairing-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      pairingId: 'pair-test',
+      pairingSecret: 'secret-test',
+      expiresAt: '2026-06-19T00:02:00.000Z',
+    };
+    window.history.pushState({}, '', '?p2p=encoded');
+
+    render(<App />);
+
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(mockCurrentPairingOffer);
+    expect(chatApi.setChatTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
   });
 });
 

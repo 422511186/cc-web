@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@coderelay/transport': fileURLToPath(new URL('../../packages/transport/src/index.ts', import.meta.url)),
+      '@coderelay/p2p-core': fileURLToPath(new URL('../../packages/p2p-core/src/index.ts', import.meta.url)),
     },
   },
   server: {

@@ -13,7 +13,20 @@ export interface Config {
   orphanIdleTimeoutMs: number;
   maxConcurrent: number;
   uploadsDir: string;
+  p2p: P2PConfig;
 }
+
+export type P2PConfig =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true;
+      readonly signalUrl: string;
+      readonly hostId: string;
+      readonly webUrl: string;
+      readonly iceLocalAddresses: string[];
+      readonly pairingTtlMs: number;
+      readonly stateFile: string;
+    };
 
 const VALID_PERMISSION_MODES = new Set<Config["permissionMode"]>([
   "default",
@@ -45,6 +58,7 @@ export function loadConfig(): Config {
     : 3;
   const uploadsDir = process.env.UPLOADS_DIR ||
     path.join(process.cwd(), 'uploads');
+  const p2p = loadP2PConfig(port);
 
   if (!authToken) {
     throw new Error('AUTH_TOKEN environment variable is required');
@@ -91,5 +105,37 @@ export function loadConfig(): Config {
     orphanIdleTimeoutMs,
     maxConcurrent,
     uploadsDir,
+    p2p,
   };
+}
+
+function loadP2PConfig(port: number): P2PConfig {
+  const signalUrl = process.env.P2P_SIGNAL_URL || process.env.CODERELAY_SIGNAL_URL || '';
+  if (!signalUrl) {
+    return { enabled: false };
+  }
+
+  const pairingTtlMs = process.env.P2P_PAIRING_TTL_MS
+    ? Number(process.env.P2P_PAIRING_TTL_MS)
+    : 2 * 60 * 1000;
+  if (pairingTtlMs <= 0 || !isFinite(pairingTtlMs)) {
+    throw new Error('P2P_PAIRING_TTL_MS must be positive and finite');
+  }
+
+  return {
+    enabled: true,
+    signalUrl,
+    hostId: process.env.P2P_HOST_ID || `coderelay-host-${os.hostname()}`,
+    webUrl: process.env.P2P_WEB_URL || 'http://127.0.0.1:3000',
+    iceLocalAddresses: parseCsv(process.env.P2P_ICE_LOCAL_ADDRESS || process.env.P2P_ICE_LOCAL_ADDRESSES || ''),
+    pairingTtlMs,
+    stateFile: process.env.P2P_STATE_FILE || path.join(os.homedir(), '.coderelay', 'p2p-host-state.json'),
+  };
+}
+
+function parseCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }

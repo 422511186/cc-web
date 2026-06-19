@@ -61,6 +61,36 @@ describe("createLocalHttpP2PBridgeHandlers", () => {
     ).resolves.toEqual({ status: 204, body: undefined });
   });
 
+  it("forwards FormData upload bodies without JSON encoding them", async () => {
+    const createLocalHttpP2PBridgeHandlers = await expectApiFunction("createLocalHttpP2PBridgeHandlers");
+    const form = new FormData();
+    form.append("file", new File(["hello"], "note.txt", { type: "text/plain" }));
+    const fetchFn = vi.fn(async () => jsonResponse(200, { ref: "upload-1.txt", filename: "note.txt" }));
+    const handlers = createLocalHttpP2PBridgeHandlers({
+      baseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token",
+      fetchFn,
+    });
+
+    await expect(
+      handlers.handleRequest({
+        id: "req-upload",
+        method: "POST",
+        path: "/uploads",
+        body: form,
+      }),
+    ).resolves.toEqual({ status: 200, body: { ref: "upload-1.txt", filename: "note.txt" } });
+
+    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3002/api/uploads", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+      },
+      body: form,
+      signal: undefined,
+    });
+  });
+
   it("bridges local SSE frames into P2P stream sink events and aborts on close", async () => {
     const createLocalHttpP2PBridgeHandlers = await expectApiFunction("createLocalHttpP2PBridgeHandlers");
     let capturedSignal: AbortSignal | undefined;

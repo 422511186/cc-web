@@ -5,18 +5,21 @@ import { Conversation } from './components/Conversation';
 import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
-import { useSession } from './useSession';
-import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession } from './chatApi';
+import { useSession, setSessionTransport } from './useSession';
+import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession, setChatTransport } from './chatApi';
 import { createApiClient } from './api';
-import type { ApiClient } from './api';
+import type { ApiClient, P2PPairingResponse } from './api';
 import type { ActiveAgent, PromptAnswer, PendingPrompt, Project } from '@coderelay/shared';
 import type { LiveMessage } from './useSession';
-import { clientLog } from './diagnostics';
+import { clientLog, setDiagnosticsTransport } from './diagnostics';
 import { QuestionCard } from './components/QuestionCard';
 import { PermissionCard } from './components/PermissionCard';
 import { PlanCard } from './components/PlanCard';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import QRCode from 'qrcode';
+import { connectBrowserP2P, currentPairingOffer, type BrowserP2PSession } from './p2pClient';
+import type { CodeRelayTransport } from '@coderelay/transport';
 
 function isUnauthorizedError(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && 'status' in error) {
@@ -30,6 +33,22 @@ function isNotFoundError(error: unknown): boolean {
     return (error as { status?: unknown }).status === 404;
   }
   return error instanceof Error && /\b404\b/.test(error.message);
+}
+
+function areActiveAgentsEqual(left: ActiveAgent[], right: ActiveAgent[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((agent, index) => {
+    const other = right[index];
+    return (
+      agent.runId === other.runId &&
+      agent.kind === other.kind &&
+      agent.sessionId === other.sessionId &&
+      agent.projectId === other.projectId &&
+      agent.status === other.status &&
+      agent.createdAt === other.createdAt &&
+      agent.lastEventAt === other.lastEventAt
+    );
+  });
 }
 
 /** 纯新建会话视图:无历史 session,只展示实时流式消息与待答卡片 */
@@ -283,8 +302,194 @@ function NewSessionDialog({
   );
 }
 
+function PairingDialog({
+  pairing,
+  onClose,
+}: {
+  pairing: P2PPairingResponse | null;
+  onClose: () => void;
+}) {
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pairing) {
+      setQrDataUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    setQrDataUrl(null);
+    void QRCode.toDataURL(pairing.pairingUrl, {
+      width: 220,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+    }).then((dataUrl) => {
+      if (!cancelled) {
+        setQrDataUrl(dataUrl);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pairing]);
+
+  if (!pairing) return null;
+
+  return (
+    <div
+      role="presentation"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 2100,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '1rem',
+      }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-label="添加设备"
+        style={{
+          width: 'min(480px, 100%)',
+          background: '#fff',
+          borderRadius: 8,
+          border: '1px solid #d8dee4',
+          boxShadow: '0 16px 48px rgba(31,35,40,0.18)',
+          padding: '1rem',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '1rem', color: '#24292f' }}>添加设备</div>
+            <div style={{ color: '#6e7781', fontSize: '0.82rem', marginTop: '0.2rem' }}>
+              用手机打开下方链接或扫码完成 P2P 配对。
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭添加设备"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              border: '1px solid #d8dee4',
+              borderRadius: 6,
+              background: '#fff',
+              color: '#57606a',
+              cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem', minHeight: 220 }}>
+          {qrDataUrl ? (
+            <img
+              alt="配对二维码"
+              src={qrDataUrl}
+              style={{ width: 220, height: 220, imageRendering: 'pixelated' }}
+            />
+          ) : (
+            <div style={{ color: '#6e7781', alignSelf: 'center' }}>正在生成二维码…</div>
+          )}
+        </div>
+
+        <label htmlFor="p2p-pairing-url" style={{ display: 'block', fontSize: '0.78rem', color: '#6e7781', marginBottom: '0.4rem', fontWeight: 600 }}>
+          配对链接
+        </label>
+        <input
+          id="p2p-pairing-url"
+          readOnly
+          value={pairing.pairingUrl}
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            padding: '0.62rem 0.7rem',
+            border: '1px solid #d8dee4',
+            borderRadius: 6,
+            fontSize: '0.82rem',
+            marginBottom: '0.85rem',
+          }}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'center' }}>
+          <span style={{ color: '#6e7781', fontSize: '0.78rem' }}>
+            有效期至 {new Date(pairing.offer.expiresAt).toLocaleTimeString('zh-CN')}
+          </span>
+          <button
+            type="button"
+            onClick={() => void navigator.clipboard?.writeText(pairing.pairingUrl)}
+            style={{
+              padding: '0.5rem 0.9rem',
+              border: '1px solid #0969da',
+              borderRadius: 6,
+              background: '#fff',
+              color: '#0969da',
+              cursor: 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            复制链接
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function P2PConnectionScreen({
+  state,
+  error,
+}: {
+  state: 'connecting' | 'failed';
+  error?: string;
+}) {
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: '#f6f8fa',
+      color: '#24292f',
+    }}>
+      <div style={{
+        width: 'min(420px, calc(100% - 2rem))',
+        background: '#fff',
+        border: '1px solid #d8dee4',
+        borderRadius: 8,
+        padding: '1.25rem',
+        boxShadow: '0 8px 28px rgba(31,35,40,0.12)',
+      }}>
+        <div style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.45rem' }}>
+          {state === 'connecting' ? '正在连接 P2P' : 'P2P 连接失败'}
+        </div>
+        <div style={{ color: state === 'failed' ? '#cf222e' : '#57606a', fontSize: '0.86rem' }}>
+          {state === 'failed' ? error ?? '无法建立 P2P 连接' : '正在通过 CodeRelay Signal 与电脑端建立 DataChannel。'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [apiClient, setApiClient] = useState<ApiClient | null>(null);
+  const [p2pState, setP2PState] = useState<
+    | { state: 'idle' }
+    | { state: 'connecting' }
+    | { state: 'connected' }
+    | { state: 'failed'; error: string }
+  >({ state: 'idle' });
+  const [pairingDialog, setPairingDialog] = useState<P2PPairingResponse | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
   const [selectedSession, setSelectedSession] = useState<{
     projectId: string;
     sessionId: string;
@@ -298,6 +503,9 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
   const [maxAgents, setMaxAgents] = useState(3);
+  const initialPairingOfferRef = useRef(currentPairingOffer());
+  const p2pConnectStartedRef = useRef(false);
+  const p2pSessionRef = useRef<BrowserP2PSession | null>(null);
 
   // 跟踪当前活跃 runId
   const runIdRef = useRef<string | null>(null);
@@ -315,8 +523,20 @@ function App() {
   // 切回时只渲染边界内历史 + 实时流全量重放,避免重复。一旦锁定不被后续增长覆盖。
   const [boundaries, setBoundaries] = useState<Map<string, number>>(new Map());
 
+  const clearP2PTransport = useCallback(() => {
+    p2pSessionRef.current?.close();
+    p2pSessionRef.current = null;
+    setChatTransport(null);
+    setSessionTransport(null);
+    setDiagnosticsTransport(null);
+    setP2PState({ state: 'idle' });
+    p2pConnectStartedRef.current = false;
+    (window as unknown as { __coderelayTransportMode?: string }).__coderelayTransportMode = 'http';
+  }, []);
+
   const clearAuthState = useCallback((client?: ApiClient | null) => {
     client?.disconnect();
+    clearP2PTransport();
     sessionStorage.removeItem('authToken');
     sessionStorage.removeItem('cc-web-activeRuns');
     activeRunsRef.current.clear();
@@ -324,7 +544,38 @@ function App() {
     setRunId(null);
     setSelectedSession(null);
     window.history.pushState({}, '', window.location.pathname);
+  }, [clearP2PTransport]);
+
+  const installP2PTransport = useCallback((transport: CodeRelayTransport) => {
+    setChatTransport(transport);
+    setSessionTransport(transport);
+    setDiagnosticsTransport(transport);
+    (window as unknown as { __coderelayTransportMode?: string }).__coderelayTransportMode = 'p2p';
   }, []);
+
+  const connectP2PWithToken = useCallback(async (token: string) => {
+    const offer = initialPairingOfferRef.current ?? currentPairingOffer();
+    if (!offer) {
+      return false;
+    }
+
+    setP2PState({ state: 'connecting' });
+    try {
+      const session = await connectBrowserP2P(offer);
+      p2pSessionRef.current = session;
+      installP2PTransport(session.transport);
+      const client = createApiClient(token, () => clearAuthState(client), session.transport);
+      setApiClient(client);
+      setP2PState({ state: 'connected' });
+      return true;
+    } catch (error) {
+      setP2PState({
+        state: 'failed',
+        error: error instanceof Error ? error.message : 'P2P 连接失败',
+      });
+      return false;
+    }
+  }, [clearAuthState, installP2PTransport]);
 
   const handleHistoryLoaded = useCallback((sessionId: string, length: number) => {
     lastHistoryLenRef.current.set(sessionId, length);
@@ -456,8 +707,12 @@ function App() {
   const refreshActiveAgents = useCallback(async () => {
     try {
       const result = await listActiveAgents();
-      setActiveAgents(result.agents);
-      setMaxAgents(result.maxConcurrent);
+      if (!areActiveAgentsEqual(activeAgents, result.agents)) {
+        setActiveAgents(result.agents);
+      }
+      if (maxAgents !== result.maxConcurrent) {
+        setMaxAgents(result.maxConcurrent);
+      }
       clientLog('app.active-agents-refreshed', {
         count: result.agents.length,
         maxConcurrent: result.maxConcurrent,
@@ -482,7 +737,7 @@ function App() {
       }
       // 活跃列表失败不阻塞主流程
     }
-  }, [apiClient, attachActiveAgent, clearAuthState]);
+  }, [activeAgents, apiClient, attachActiveAgent, clearAuthState, maxAgents]);
 
   // 关闭/刷新页面时尽力关掉活跃会话
   useEffect(() => {
@@ -588,10 +843,15 @@ function App() {
   }, [restoreActiveRun]);
 
   const handleLogin = (token: string) => {
+    sessionStorage.setItem('authToken', token);
+    if (initialPairingOfferRef.current ?? currentPairingOffer()) {
+      p2pConnectStartedRef.current = true;
+      void connectP2PWithToken(token);
+      return;
+    }
+
     const client = createApiClient(token, () => clearAuthState(client));
     setApiClient(client);
-    // Store token in sessionStorage for reload persistence
-    sessionStorage.setItem('authToken', token);
   };
 
   const handleSessionSelect = (projectId: string, sessionId: string) => {
@@ -779,6 +1039,21 @@ function App() {
     clearAuthState(apiClient);
   }, [apiClient, clearAuthState]);
 
+  const handleOpenPairing = useCallback(async () => {
+    if (!apiClient) return;
+    setPairingBusy(true);
+    try {
+      setPairingDialog(await apiClient.openP2PPairing());
+    } catch (error) {
+      setAlertDialog({
+        title: '添加设备失败',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPairingBusy(false);
+    }
+  }, [apiClient]);
+
   useEffect(() => {
     if (
       closed &&
@@ -795,6 +1070,16 @@ function App() {
   if (!apiClient) {
     const storedToken = sessionStorage.getItem('authToken');
     if (storedToken) {
+      if (initialPairingOfferRef.current ?? currentPairingOffer()) {
+        if (!p2pConnectStartedRef.current && p2pState.state === 'idle') {
+          p2pConnectStartedRef.current = true;
+          void connectP2PWithToken(storedToken);
+        }
+        if (p2pState.state === 'failed') {
+          return <P2PConnectionScreen state="failed" error={p2pState.error} />;
+        }
+        return <P2PConnectionScreen state="connecting" />;
+      }
       const client = createApiClient(storedToken, () => clearAuthState(client));
       setApiClient(client);
     } else {
@@ -833,7 +1118,42 @@ function App() {
             padding: '0.75rem 1rem',
             borderTop: '1px solid #eee',
             backgroundColor: '#fafafa',
+            flexDirection: 'column',
+            gap: '0.5rem',
           }}>
+            {p2pState.state === 'connected' && (
+              <div style={{
+                width: '100%',
+                padding: '0.45rem 0.65rem',
+                boxSizing: 'border-box',
+                borderRadius: 6,
+                border: '1px solid #1f883d33',
+                background: '#1f883d12',
+                color: '#1f883d',
+                fontSize: '0.78rem',
+                fontWeight: 650,
+                textAlign: 'center',
+              }}>
+                P2P 已连接
+              </div>
+            )}
+            <button
+              onClick={handleOpenPairing}
+              disabled={pairingBusy}
+              style={{
+                width: '100%',
+                padding: '0.625rem 1rem',
+                borderRadius: 8,
+                border: '1px solid #0969da',
+                background: pairingBusy ? '#eaeef2' : '#fff',
+                color: pairingBusy ? '#6a737d' : '#0969da',
+                cursor: pairingBusy ? 'not-allowed' : 'pointer',
+                fontSize: '0.9rem',
+                fontWeight: 600,
+              }}
+            >
+              添加设备
+            </button>
             <button
               onClick={handleLogout}
               style={{
@@ -1082,6 +1402,10 @@ function App() {
         title={alertDialog?.title || ''}
         message={alertDialog?.message || ''}
         onClose={() => setAlertDialog(null)}
+      />
+      <PairingDialog
+        pairing={pairingDialog}
+        onClose={() => setPairingDialog(null)}
       />
     </div>
   );

@@ -134,4 +134,46 @@ describe('ApiClient transport injection', () => {
       path: '/projects',
     });
   });
+
+  test('openP2PPairing 通过注入的 transport 打开配对窗口', async () => {
+    const transport = fakeTransport();
+    transport.request.mockResolvedValue({
+      offer: {
+        protocol: 'coderelay-pairing-v1',
+        webUrl: 'http://web.test/',
+        signalUrl: 'ws://signal.test/',
+        hostId: 'host-test',
+        hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+        hostPublicKeyFingerprint: 'host-fingerprint',
+        pairingId: 'pair-test',
+        pairingSecret: 'secret-test',
+        expiresAt: '2026-06-19T00:02:00.000Z',
+      },
+      pairingUrl: 'http://web.test/?p2p=encoded',
+    });
+
+    const client = createApiClient('test-token-123', undefined, transport);
+    const result = await client.openP2PPairing();
+
+    expect(result.pairingUrl).toBe('http://web.test/?p2p=encoded');
+    expect(transport.request).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/p2p/pairing',
+      body: {},
+    });
+  });
+
+  test('getImageDataUrl 通过注入的 transport 读取本地图片 data URL', async () => {
+    const transport = fakeTransport();
+    transport.request.mockResolvedValue({ dataUrl: 'data:image/png;base64,abc' });
+
+    const client = createApiClient('test-token-123', undefined, transport);
+    const dataUrl = await client.getImageDataUrl('C:/Users/huang/.claude/image-cache/shot.png');
+
+    expect(dataUrl).toBe('data:image/png;base64,abc');
+    expect(transport.request).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/image-data?path=C%3A%2FUsers%2Fhuang%2F.claude%2Fimage-cache%2Fshot.png',
+    });
+  });
 });

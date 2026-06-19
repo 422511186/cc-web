@@ -10,6 +10,19 @@ function expectApiFunction<T extends (...args: any[]) => any>(name: string): T {
 }
 
 describe("Signal WebSocket server", () => {
+  it("exposes an HTTP health check for process readiness", async () => {
+    const startSignalServer = expectApiFunction("startSignalServer");
+    const server = await startSignalServer({ port: 0 });
+
+    try {
+      const response = await fetch(server.url.replace(/^ws:/, "http:").replace(/\/$/, "/healthz"));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true, service: "coderelay-signal" });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("routes connect, accept, and WebRTC offer messages over real WebSocket connections", async () => {
     const startSignalServer = expectApiFunction("startSignalServer");
     const server = await startSignalServer({ port: 0 });

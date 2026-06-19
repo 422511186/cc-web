@@ -160,16 +160,28 @@ function headersFor(
   if (options.authToken) {
     nextHeaders.Authorization = `Bearer ${options.authToken}`;
   }
-  if (body !== undefined) {
+  if (body !== undefined && !isFormDataBody(body)) {
     nextHeaders["Content-Type"] ??= "application/json";
   }
   return nextHeaders;
 }
 
-function bodyFor(body: unknown): string | undefined {
-  return body === undefined ? undefined : JSON.stringify(body);
+function bodyFor(body: unknown): string | FormData | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+
+  if (isFormDataBody(body)) {
+    return body;
+  }
+
+  return JSON.stringify(body);
 }
 
 function urlFor(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
+
+function isFormDataBody(body: unknown): body is FormData {
+  return typeof FormData === "function" && body instanceof FormData;
 }

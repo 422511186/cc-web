@@ -50,6 +50,7 @@ describe("SignalHub", () => {
       requestId: "req-1",
       hostId: "host-1",
       clientId: "phone-1",
+      clientPublicKeyJwk: { kty: "EC", crv: "P-256", x: "client-x", y: "client-y" },
       clientPublicKeyFingerprint: "client-fp",
     });
     clientSession.receive({
@@ -66,6 +67,7 @@ describe("SignalHub", () => {
         requestId: "req-1",
         hostId: "host-1",
         clientId: "phone-1",
+        clientPublicKeyJwk: { kty: "EC", crv: "P-256", x: "client-x", y: "client-y" },
         clientPublicKeyFingerprint: "client-fp",
       },
     ]);
@@ -129,6 +131,60 @@ describe("SignalHub", () => {
     ]);
   });
 
+  it("routes host pairing acceptance back only to the requesting client", () => {
+    const createSignalHub = expectApiFunction("createSignalHub");
+    const hub = createSignalHub({ now: () => Date.parse("2026-06-18T10:00:00.000Z") });
+    const host = new FakePeer();
+    const client = new FakePeer();
+    const outsider = new FakePeer();
+    const hostSession = hub.connectPeer(host);
+    const clientSession = hub.connectPeer(client);
+    const outsiderSession = hub.connectPeer(outsider);
+    hostSession.receive({ type: "host.online", hostId: "host-1" });
+    hostSession.receive({
+      type: "pairing.open",
+      hostId: "host-1",
+      pairingId: "pair-1",
+      expiresAt: "2026-06-18T10:02:00.000Z",
+    });
+    clientSession.receive({
+      type: "pairing.request",
+      requestId: "pair-req-1",
+      pairingId: "pair-1",
+      clientId: "phone-1",
+      clientPublicKeyFingerprint: "client-fp",
+      proof: { signature: "sig" },
+    });
+
+    host.clear();
+    client.clear();
+    outsider.clear();
+
+    hostSession.receive({
+      type: "pairing.accept",
+      requestId: "pair-req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+    });
+    outsiderSession.receive({
+      type: "pairing.accept",
+      requestId: "pair-req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+    });
+
+    expect(client.sent).toEqual([
+      {
+        type: "pairing.accepted",
+        requestId: "pair-req-1",
+        hostId: "host-1",
+        clientId: "phone-1",
+      },
+    ]);
+    expect(host.sent).toEqual([]);
+    expect(outsider.sent).toEqual([{ type: "signal.error", requestId: "pair-req-1", reason: "pairing_not_found" }]);
+  });
+
   it("forwards offer, answer, and candidate only between participants of the accepted connection", () => {
     const createSignalHub = expectApiFunction("createSignalHub");
     const hub = createSignalHub();
@@ -166,6 +222,70 @@ describe("SignalHub", () => {
     ]);
     expect(client.sent).toEqual([{ type: "webrtc.answer", connectionId: "conn-1", from: "host", sdp: "answer-sdp" }]);
     expect(outsider.sent).toEqual([{ type: "signal.error", reason: "not_connection_participant" }]);
+  });
+
+  it("forwards connection challenge and signed response only between the pending participants", () => {
+    const createSignalHub = expectApiFunction("createSignalHub");
+    const hub = createSignalHub();
+    const host = new FakePeer();
+    const client = new FakePeer();
+    const outsider = new FakePeer();
+    const hostSession = hub.connectPeer(host);
+    const clientSession = hub.connectPeer(client);
+    const outsiderSession = hub.connectPeer(outsider);
+    hostSession.receive({ type: "host.online", hostId: "host-1" });
+    clientSession.receive({
+      type: "client.connect",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      clientPublicKeyFingerprint: "client-fp",
+    });
+    host.clear();
+    client.clear();
+    outsider.clear();
+
+    hostSession.receive({
+      type: "connection.challenge",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      challenge: { protocol: "coderelay-challenge-v1", challengeId: "challenge-1" },
+    });
+    clientSession.receive({
+      type: "connection.challenge_response",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      proof: { protocol: "coderelay-challenge-proof-v1", challengeId: "challenge-1" },
+    });
+    outsiderSession.receive({
+      type: "connection.challenge_response",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      proof: { protocol: "coderelay-challenge-proof-v1", challengeId: "challenge-1" },
+    });
+
+    expect(client.sent).toEqual([
+      {
+        type: "connection.challenge",
+        requestId: "req-1",
+        hostId: "host-1",
+        clientId: "phone-1",
+        challenge: { protocol: "coderelay-challenge-v1", challengeId: "challenge-1" },
+      },
+    ]);
+    expect(host.sent).toEqual([
+      {
+        type: "connection.challenge_response",
+        requestId: "req-1",
+        hostId: "host-1",
+        clientId: "phone-1",
+        proof: { protocol: "coderelay-challenge-proof-v1", challengeId: "challenge-1" },
+      },
+    ]);
+    expect(outsider.sent).toEqual([{ type: "signal.error", requestId: "req-1", reason: "connection_not_found" }]);
   });
 
   it("rejects business API messages instead of forwarding them", () => {

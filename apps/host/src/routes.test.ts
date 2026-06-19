@@ -234,6 +234,15 @@ describe('API Routes', () => {
       expect(res.body.length).toBeGreaterThan(0);
     });
 
+    it('should expose an image data URL for transport-backed clients', async () => {
+      const res = await request(imageApp).get('/api/image-data').query({ path: pngPath });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        dataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+      });
+    });
+
     it('should reject paths outside the cache dir (traversal)', async () => {
       const outside = path.join(imageDir, '..', '..', 'secret.png');
       const res = await request(imageApp).get('/api/image').query({ path: outside });

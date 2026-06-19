@@ -112,6 +112,52 @@ describe("P2PTransport", () => {
     expect(link.client.sentCount).toBeGreaterThanOrEqual(4);
     expect(link.connectionId).toBe("memory-link-1");
   });
+
+  it("round-trips FormData file uploads through the P2P bridge", async () => {
+    const P2PTransport = expectApiFunction("P2PTransport");
+    const createP2PBridge = expectApiFunction("createP2PBridge");
+    const link = createMemoryLink();
+    let forwardedBody: unknown;
+    createP2PBridge(link.host, {
+      handleRequest: async (request: { body: unknown }) => {
+        forwardedBody = request.body;
+        return { status: 200, body: { ok: true } };
+      },
+    });
+    const client = new P2PTransport({ port: link.client });
+    const form = new FormData();
+    form.append("description", "upload from phone");
+    form.append("file", new File(["hello over p2p"], "note.txt", { type: "text/plain" }));
+
+    await expect(client.request({ method: "POST", path: "/uploads", body: form })).resolves.toEqual({ ok: true });
+
+    expect(forwardedBody).toBeInstanceOf(FormData);
+    const forwardedForm = forwardedBody as FormData;
+    expect(forwardedForm.get("description")).toBe("upload from phone");
+    const file = forwardedForm.get("file");
+    expect(file).toBeInstanceOf(File);
+    expect((file as File).name).toBe("note.txt");
+    expect((file as File).type).toBe("text/plain");
+    await expect((file as File).text()).resolves.toBe("hello over p2p");
+  });
+
+  it("rejects the request promise when FormData serialization fails", async () => {
+    const P2PTransport = expectApiFunction("P2PTransport");
+    const link = createMemoryLink();
+    const client = new P2PTransport({ port: link.client });
+    const form = new FormData();
+    form.append("file", new File(["hello"], "note.txt"));
+    const readError = new Error("cannot read file");
+    const arrayBufferSpy = vi.spyOn(File.prototype, "arrayBuffer").mockRejectedValue(readError);
+
+    try {
+      await expect(client.request({ method: "POST", path: "/uploads", body: form })).rejects.toThrow(
+        "cannot read file",
+      );
+    } finally {
+      arrayBufferSpy.mockRestore();
+    }
+  });
 });
 
 interface MemoryPort {

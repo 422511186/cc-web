@@ -170,6 +170,63 @@ function ImageThumbnail({ src, alt, onClick }: { src: string; alt: string; onCli
   );
 }
 
+function RemoteImageThumbnail({
+  apiClient,
+  filePath,
+  alt,
+  onImageClick,
+}: {
+  apiClient: ApiClient;
+  filePath: string;
+  alt: string;
+  onImageClick?: (src: string, alt: string) => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(null);
+    void apiClient.getImageDataUrl(filePath).then(
+      (dataUrl) => {
+        if (!cancelled) {
+          setSrc(dataUrl);
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setSrc(null);
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient, filePath]);
+
+  if (!src) {
+    return (
+      <div
+        aria-label={`${alt} loading`}
+        style={{
+          height: '72px',
+          width: '72px',
+          borderRadius: '8px',
+          border: '1px solid rgba(0,0,0,0.12)',
+          background: 'rgba(255,255,255,0.25)',
+        }}
+      />
+    );
+  }
+
+  return (
+    <ImageThumbnail
+      src={src}
+      alt={alt}
+      onClick={() => onImageClick?.(src, alt)}
+    />
+  );
+}
+
 function MessageContent({ content, role, metadata, apiClient, onImageClick }: {
   content: string;
   role: string;
@@ -201,14 +258,14 @@ function MessageContent({ content, role, metadata, apiClient, onImageClick }: {
       {apiClient && metadata?.imagePaths && metadata.imagePaths.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
           {metadata.imagePaths.map((p: string, idx: number) => {
-            const src = apiClient.imageUrl(p);
             const alt = `Image ${idx + 1}`;
             return (
-              <ImageThumbnail
+              <RemoteImageThumbnail
                 key={`path-${idx}`}
-                src={src}
+                apiClient={apiClient}
+                filePath={p}
                 alt={alt}
-                onClick={() => onImageClick?.(src, alt)}
+                onImageClick={onImageClick}
               />
             );
           })}

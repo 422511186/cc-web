@@ -35,3 +35,9 @@ jobs:
 
       - name: Test with coverage thresholds
         run: npm run test:coverage
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser E2E
+        run: npm run test:e2e
