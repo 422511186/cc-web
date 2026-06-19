@@ -1,3 +1,5 @@
+import type { ClaudeSessionMode } from "./events.js";
+
 export interface AuthRequest {
   token: string;
 }
@@ -99,4 +101,20 @@ export interface SessionHeartbeatResponse {
   attached: boolean;
   lastHeartbeatAt: number;
   leaseExpiresAt: number;
+}
+
+export interface ClientOperationMetadata {
+  operationId?: string;
+  clientId?: string;
+  deviceName?: string;
+}
+
+export interface ChangeModeRequest extends ClientOperationMetadata {
+  mode: ClaudeSessionMode;
+}
+
+export interface ResolvePromptResponse {
+  ok: boolean;
+  reason?: 'prompt_already_resolved' | 'prompt_not_found';
+  resolvedByDeviceName?: string;
 }

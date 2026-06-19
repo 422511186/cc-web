@@ -64,6 +64,9 @@ export type PromptAnswer = QuestionAnswer | PermissionAnswer | PlanAnswer;
 
 // ── SSE 事件:服务端 → 前端 ──
 
+export const CLAUDE_SESSION_MODES = ["auto", "plan", "bypassPermissions"] as const;
+export type ClaudeSessionMode = (typeof CLAUDE_SESSION_MODES)[number];
+
 /** 用户消息回显:用户发的提问由服务端回显进事件流,
  *  使重连(整段重放)后仍能看到自己发出的消息,也让多端/多订阅者一致。 */
 export interface UserMessageEvent {
@@ -138,6 +141,47 @@ export interface RunInfoEvent {
   effort?: string;
 }
 
+export interface MessageQueuedEvent {
+  type: "message_queued";
+  operationId: string;
+  queuePosition: number;
+}
+
+export interface MessageProcessingEvent {
+  type: "message_processing";
+  operationId: string;
+}
+
+export interface MessageCompletedEvent {
+  type: "message_completed";
+  operationId: string;
+}
+
+export interface MessageFailedEvent {
+  type: "message_failed";
+  operationId: string;
+  message: string;
+}
+
+export interface PromptResolvedEvent {
+  type: "prompt_resolved";
+  promptId: string;
+  resolvedByDeviceName: string;
+  decision: string;
+}
+
+export interface ModeChangedEvent {
+  type: "mode_changed";
+  mode: ClaudeSessionMode;
+  changedByDeviceName: string;
+  appliesTo: "current_turn" | "next_turn";
+}
+
+export interface DeviceRevokedEvent {
+  type: "device_revoked";
+  message: string;
+}
+
 export type ServerEvent =
   | UserMessageEvent
   | DeltaEvent
@@ -148,7 +192,14 @@ export type ServerEvent =
   | ErrorEvent
   | ClosedEvent
   | StatusEvent
-  | RunInfoEvent;
+  | RunInfoEvent
+  | MessageQueuedEvent
+  | MessageProcessingEvent
+  | MessageCompletedEvent
+  | MessageFailedEvent
+  | PromptResolvedEvent
+  | ModeChangedEvent
+  | DeviceRevokedEvent;
 
 // ── REST 请求/响应(续聊相关) ──
 
