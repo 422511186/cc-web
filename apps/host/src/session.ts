@@ -4,6 +4,7 @@ import type {
   PendingPrompt,
   QuestionPrompt,
 } from "@coderelay/shared";
+import { randomUUID } from "node:crypto";
 import type {
   SDKMessage,
   PermissionResult,
@@ -44,6 +45,8 @@ export class Session {
   private executing = false;
   /** 已 emit 过 run_info 的模型,避免每条 assistant 消息重复广播 */
   private reportedModel: string | null = null;
+  private currentOperationId: string | null = null;
+  private queuedOperations: string[] = [];
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -52,13 +55,19 @@ export class Session {
 
   /** 追加一条用户消息 */
   send(text: string, attachments: string[] = []): void {
-    this.executing = true;
-    // 每次 send 重置 reportedModel,让续聊第二轮能重新上报新模型
-    this.reportedModel = null;
+    const operationId = randomUUID();
     // 回显进事件流:重连整段重放时仍能看到用户自己的提问
     this.emit({ type: "user_message", text });
-    // 状态转移:开始执行
-    this.emit({ type: "status", state: "executing" });
+    if (this.executing || this.pending.hasAny() || this.currentOperationId) {
+      this.queuedOperations.push(operationId);
+      this.emit({
+        type: "message_queued",
+        operationId,
+        queuePosition: this.queuedOperations.length,
+      });
+    } else {
+      this.startOperation(operationId);
+    }
     this.input.push(text, attachments);
   }
 
@@ -127,6 +136,16 @@ export class Session {
 
   private emit(event: ServerEvent): void {
     this.opts.onEvent(event);
+  }
+
+  private startOperation(operationId: string): void {
+    this.currentOperationId = operationId;
+    this.executing = true;
+    // 每次 send 重置 reportedModel,让续聊第二轮能重新上报新模型
+    this.reportedModel = null;
+    this.emit({ type: "message_processing", operationId });
+    // 状态转移:开始执行
+    this.emit({ type: "status", state: "executing" });
   }
 
   /** 把工具调用映射为待答事项,登记并挂起,等用户回答后翻译成决策 */
@@ -225,6 +244,14 @@ export class Session {
           this.abortingCurrentTurn || abortController.signal.aborted;
         if (!this.closed && !this.detached && !isTurnAbort) {
           const wasBusy = this.executing || this.pending.hasAny();
+          if (this.currentOperationId) {
+            this.emit({
+              type: "message_failed",
+              operationId: this.currentOperationId,
+              message: (err as Error).message,
+            });
+            this.currentOperationId = null;
+          }
           this.executing = false;
           this.pending.rejectAll(new Error("session failed"));
           this.emit({ type: "error", message: (err as Error).message });
@@ -312,10 +339,23 @@ export class Session {
       }
       case "result": {
         const isError = (msg as { is_error?: boolean }).is_error ?? false;
+        if (this.currentOperationId) {
+          this.emit({
+            type: isError ? "message_failed" : "message_completed",
+            operationId: this.currentOperationId,
+            ...(isError ? { message: "message failed" } : {}),
+          } as ServerEvent);
+          this.currentOperationId = null;
+        }
         this.executing = false;
         this.emit({ type: "turn_end", isError });
-        // 状态转移:一轮结束,回到空闲可发下一条
-        this.emit({ type: "status", state: "idle" });
+        const nextOperationId = this.queuedOperations.shift();
+        if (nextOperationId) {
+          this.startOperation(nextOperationId);
+        } else {
+          // 状态转移:一轮结束,回到空闲可发下一条
+          this.emit({ type: "status", state: "idle" });
+        }
         break;
       }
       default:

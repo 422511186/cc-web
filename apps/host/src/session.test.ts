@@ -18,6 +18,15 @@ function collector() {
   return { events, onEvent: (e: ServerEvent) => events.push(e) };
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("Session", () => {
   it("isBusy:执行中为 true,turn_end 后回到 false", async () => {
     let release: (() => void) | null = null;
@@ -110,6 +119,53 @@ describe("Session", () => {
     session.send("你好");
     expect(events).toContainEqual({ type: "user_message", text: "你好" });
     session.detach();
+  });
+
+  it("执行中收到多条消息时按 FIFO 排队并广播队列事件", async () => {
+    const starts: string[] = [];
+    const releases: Array<() => void> = [];
+    const client = fakeClient(async function* (params) {
+      for await (const msg of params.prompt) {
+        starts.push(String(msg.message.content));
+        await new Promise<void>((resolve) => releases.push(resolve));
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "ok",
+          session_id: "s1",
+          uuid: `r-${starts.length}`,
+        } as unknown as SDKMessage;
+      }
+    });
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+    const done = session.runToCompletion();
+
+    session.send("one");
+    session.send("two");
+    session.send("three");
+
+    await waitFor(() => starts.length === 1);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: "message_processing", operationId: expect.any(String) },
+        { type: "message_queued", operationId: expect.any(String), queuePosition: 1 },
+        { type: "message_queued", operationId: expect.any(String), queuePosition: 2 },
+      ])
+    );
+
+    releases.shift()?.();
+    await waitFor(() => starts.length === 2);
+    releases.shift()?.();
+    await waitFor(() => starts.length === 3);
+    releases.shift()?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(starts).toEqual(["one", "two", "three"]);
+    expect(events.filter((event) => event.type === "message_completed")).toHaveLength(3);
+    session.detach();
+    await done;
   });
 
   it("translates assistant text block into block + turn_end events", async () => {
