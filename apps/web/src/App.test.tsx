@@ -86,6 +86,7 @@ vi.mock('./chatApi', () => ({
   setChatTransport: vi.fn(),
   startContinue: vi.fn((sessionId: string) => Promise.resolve(sessionId)),
   startNew: vi.fn(() => Promise.resolve('run-1')),
+  changeMode: vi.fn(() => Promise.resolve({ ok: true, mode: 'plan', appliesTo: 'next_turn' })),
   sendMessage: vi.fn(),
   respond: vi.fn(),
   closeSession: vi.fn(() => Promise.resolve()),
@@ -132,6 +133,8 @@ let sessionState: {
   effort: string | null;
   closed: boolean;
   closedReason: string | null;
+  mode: 'auto' | 'plan' | 'bypassPermissions';
+  lastPromptResolution: null;
 };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -162,6 +165,8 @@ beforeEach(() => {
     effort: null,
     closed: false,
     closedReason: null,
+    mode: 'auto',
+    lastPromptResolution: null,
   };
 });
 vi.mock('./useSession', () => ({
@@ -379,15 +384,13 @@ describe('App P2P 配对与传输切换', () => {
     Storage.prototype.removeItem = vi.fn();
   });
 
-  test('点击添加设备后显示 Host 生成的配对链接和二维码', async () => {
+  test('Web 聊天页不再显示添加设备入口，设备配对由 Host 管理页负责', async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button', { name: '添加设备' }));
-
-    expect(mockOpenP2PPairing).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole('dialog', { name: '添加设备' })).toBeInTheDocument();
-    expect(screen.getByDisplayValue('http://web.test/?p2p=encoded')).toBeInTheDocument();
-    expect(await screen.findByAltText('配对二维码')).toHaveAttribute('src', 'data:image/png;base64,qr');
+    await screen.findByText('协议：HTTP');
+    expect(screen.queryByRole('button', { name: '添加设备' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '添加设备' })).not.toBeInTheDocument();
+    expect(mockOpenP2PPairing).not.toHaveBeenCalled();
   });
 
   test('扫码链接进入后连接 P2P 并把业务请求切到 P2PTransport', async () => {
@@ -416,6 +419,72 @@ describe('App P2P 配对与传输切换', () => {
     expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
+  });
+
+  test('扫码链接进入且本机没有 token 时也直接连接 P2P，不显示 access token 登录页', async () => {
+    const p2pClient = await import('./p2pClient');
+    Storage.prototype.getItem = vi.fn(() => null);
+    mockCurrentPairingOffer = {
+      protocol: 'coderelay-pairing-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      pairingId: 'pair-test',
+      pairingSecret: 'secret-test',
+      expiresAt: '2026-06-19T00:02:00.000Z',
+    };
+    window.history.pushState({}, '', '?p2p=encoded');
+
+    render(<App />);
+
+    expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(mockCurrentPairingOffer);
+    expect(createApiClient).toHaveBeenCalledWith('p2p-session', expect.any(Function), mockP2PTransport);
+  });
+
+  test('P2P 入口恢复 URL 会话时，应等 DataChannel 安装后再探活 active run', async () => {
+    const chatApi = await import('./chatApi');
+    const p2pClient = await import('./p2pClient');
+    let resolveP2P!: (session: typeof mockP2PSession) => void;
+    vi.mocked(p2pClient.connectBrowserP2P).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveP2P = resolve;
+      })
+    );
+    Storage.prototype.getItem = vi.fn((key) => {
+      if (key === 'cc-web-activeRuns') return JSON.stringify({ sA: 'run-A' });
+      return null;
+    });
+    mockCurrentPairingOffer = {
+      protocol: 'coderelay-pairing-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      pairingId: 'pair-test',
+      pairingSecret: 'secret-test',
+      expiresAt: '2026-06-19T00:02:00.000Z',
+    };
+    window.history.pushState({}, '', '?p2p=encoded&project=pA&session=sA');
+
+    render(<App />);
+
+    expect(await screen.findByText('正在连接 P2P')).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(chatApi.probeRun).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveP2P(mockP2PSession);
+    });
+
+    await screen.findByText('P2P 已连接');
+    await waitFor(() => expect(chatApi.probeRun).toHaveBeenCalledWith('run-A'));
   });
 
   test('普通首页存在已绑定 Host 时自动恢复 P2P 并把业务请求切到 P2PTransport', async () => {
@@ -666,6 +735,21 @@ describe('App 执行状态与模型展示', () => {
     await enterActiveSession();
     expect(screen.getByText(/模型:\s*claude-opus-4-8/)).toBeInTheDocument();
     expect(screen.getByText(/强度:\s*high/)).toBeInTheDocument();
+  });
+
+  test('点击 Plan 模式按钮会切换当前会话模式', async () => {
+    const chatApi = await import('./chatApi');
+    await enterActiveSession();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Plan' }));
+
+    await waitFor(() => expect(chatApi.changeMode).toHaveBeenCalledWith(
+      'sA',
+      expect.objectContaining({
+        mode: 'plan',
+        deviceName: '此设备',
+      })
+    ));
   });
 
   test('closed=true(detached) 时状态栏显示「已结束」而非「连接中…」', async () => {

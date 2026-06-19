@@ -6,9 +6,9 @@ import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
 import { useSession, setSessionTransport } from './useSession';
-import { startNew, startContinue, sendMessage, respond, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession, setChatTransport } from './chatApi';
+import { startNew, startContinue, sendMessage, respond, changeMode, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession, setChatTransport } from './chatApi';
 import { createApiClient } from './api';
-import type { ApiClient, P2PPairingResponse } from './api';
+import type { ApiClient } from './api';
 import type { ActiveAgent, PromptAnswer, PendingPrompt, Project } from '@coderelay/shared';
 import type { LiveMessage } from './useSession';
 import { clientLog, setDiagnosticsTransport } from './diagnostics';
@@ -17,7 +17,6 @@ import { PermissionCard } from './components/PermissionCard';
 import { PlanCard } from './components/PlanCard';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import QRCode from 'qrcode';
 import {
   connectBrowserP2P,
   connectTrustedBrowserP2P,
@@ -26,6 +25,8 @@ import {
   type BrowserP2PSession,
 } from './p2pClient';
 import type { CodeRelayTransport } from '@coderelay/transport';
+
+const P2P_SESSION_TOKEN = 'p2p-session';
 
 function isUnauthorizedError(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && 'status' in error) {
@@ -308,149 +309,6 @@ function NewSessionDialog({
   );
 }
 
-function PairingDialog({
-  pairing,
-  onClose,
-}: {
-  pairing: P2PPairingResponse | null;
-  onClose: () => void;
-}) {
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!pairing) {
-      setQrDataUrl(null);
-      return;
-    }
-
-    let cancelled = false;
-    setQrDataUrl(null);
-    void QRCode.toDataURL(pairing.pairingUrl, {
-      width: 220,
-      margin: 1,
-      errorCorrectionLevel: 'M',
-    }).then((dataUrl) => {
-      if (!cancelled) {
-        setQrDataUrl(dataUrl);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [pairing]);
-
-  if (!pairing) return null;
-
-  return (
-    <div
-      role="presentation"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 2100,
-        background: 'rgba(0,0,0,0.35)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1rem',
-      }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        role="dialog"
-        aria-label="添加设备"
-        style={{
-          width: 'min(480px, 100%)',
-          background: '#fff',
-          borderRadius: 8,
-          border: '1px solid #d8dee4',
-          boxShadow: '0 16px 48px rgba(31,35,40,0.18)',
-          padding: '1rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: '1rem', color: '#24292f' }}>添加设备</div>
-            <div style={{ color: '#6e7781', fontSize: '0.82rem', marginTop: '0.2rem' }}>
-              用手机打开下方链接或扫码完成 P2P 配对。
-            </div>
-          </div>
-          <button
-            type="button"
-            aria-label="关闭添加设备"
-            onClick={onClose}
-            style={{
-              width: 30,
-              height: 30,
-              border: '1px solid #d8dee4',
-              borderRadius: 6,
-              background: '#fff',
-              color: '#57606a',
-              cursor: 'pointer',
-            }}
-          >
-            ×
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem', minHeight: 220 }}>
-          {qrDataUrl ? (
-            <img
-              alt="配对二维码"
-              src={qrDataUrl}
-              style={{ width: 220, height: 220, imageRendering: 'pixelated' }}
-            />
-          ) : (
-            <div style={{ color: '#6e7781', alignSelf: 'center' }}>正在生成二维码…</div>
-          )}
-        </div>
-
-        <label htmlFor="p2p-pairing-url" style={{ display: 'block', fontSize: '0.78rem', color: '#6e7781', marginBottom: '0.4rem', fontWeight: 600 }}>
-          配对链接
-        </label>
-        <input
-          id="p2p-pairing-url"
-          readOnly
-          value={pairing.pairingUrl}
-          style={{
-            width: '100%',
-            boxSizing: 'border-box',
-            padding: '0.62rem 0.7rem',
-            border: '1px solid #d8dee4',
-            borderRadius: 6,
-            fontSize: '0.82rem',
-            marginBottom: '0.85rem',
-          }}
-          onFocus={(event) => event.currentTarget.select()}
-        />
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'center' }}>
-          <span style={{ color: '#6e7781', fontSize: '0.78rem' }}>
-            有效期至 {new Date(pairing.offer.expiresAt).toLocaleTimeString('zh-CN')}
-          </span>
-          <button
-            type="button"
-            onClick={() => void navigator.clipboard?.writeText(pairing.pairingUrl)}
-            style={{
-              padding: '0.5rem 0.9rem',
-              border: '1px solid #0969da',
-              borderRadius: 6,
-              background: '#fff',
-              color: '#0969da',
-              cursor: 'pointer',
-              fontWeight: 600,
-            }}
-          >
-            复制链接
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function P2PConnectionScreen({
   state,
   error,
@@ -494,8 +352,6 @@ function App() {
     | { state: 'connected' }
     | { state: 'failed'; error: string }
   >({ state: 'idle' });
-  const [pairingDialog, setPairingDialog] = useState<P2PPairingResponse | null>(null);
-  const [pairingBusy, setPairingBusy] = useState(false);
   const [selectedSession, setSelectedSession] = useState<{
     projectId: string;
     sessionId: string;
@@ -592,6 +448,13 @@ function App() {
     }
   }, [clearAuthState, installP2PTransport]);
 
+  const hasP2PEntry = useCallback(() => Boolean(
+    initialPairingOfferRef.current ??
+    currentPairingOffer() ??
+    initialTrustedHostProfileRef.current ??
+    loadLastTrustedHostProfile()
+  ), []);
+
   const handleHistoryLoaded = useCallback((sessionId: string, length: number) => {
     lastHistoryLenRef.current.set(sessionId, length);
   }, []);
@@ -669,7 +532,7 @@ function App() {
     }
   }, [forgetActiveRun]);
 
-  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed } = useSession(runId);
+  const { messages: liveMessages, pending, connected, error: liveError, status, model, effort, closed, mode } = useSession(runId);
   const isAgentLimitReached = activeAgents.length >= maxAgents;
   const currentBackendRun = selectedSession
     ? activeAgents.find(
@@ -848,6 +711,9 @@ function App() {
           // 不是“重新创建一个 continue run”。
           const activeRunId = activeRunsObj[sessionId];
           if (activeRunId) {
+            if (hasP2PEntry() && !apiClient) {
+              return;
+            }
             void restoreActiveRun(sessionId);
           }
         }
@@ -855,16 +721,11 @@ function App() {
         // JSON 解析失败或其他错误，静默忽略，不影响正常渲染
       }
     }
-  }, [restoreActiveRun]);
+  }, [apiClient, hasP2PEntry, restoreActiveRun]);
 
   const handleLogin = (token: string) => {
     sessionStorage.setItem('authToken', token);
-    if (
-      initialPairingOfferRef.current ??
-      currentPairingOffer() ??
-      initialTrustedHostProfileRef.current ??
-      loadLastTrustedHostProfile()
-    ) {
+    if (hasP2PEntry()) {
       p2pConnectStartedRef.current = true;
       void connectP2PWithToken(token);
       return;
@@ -1020,6 +881,22 @@ function App() {
     [runId]
   );
 
+  const handleModeChange = useCallback(async (nextMode: 'auto' | 'plan' | 'bypassPermissions') => {
+    if (!runId || nextMode === mode) return;
+    try {
+      await changeMode(runId, {
+        operationId: `mode-${Date.now().toString(36)}`,
+        mode: nextMode,
+        deviceName: '此设备',
+      });
+    } catch (e) {
+      setAlertDialog({
+        title: '模式切换失败',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [mode, runId]);
+
   const handleAbort = useCallback(async () => {
     if (!runId) return;
     try {
@@ -1059,21 +936,6 @@ function App() {
     clearAuthState(apiClient);
   }, [apiClient, clearAuthState]);
 
-  const handleOpenPairing = useCallback(async () => {
-    if (!apiClient) return;
-    setPairingBusy(true);
-    try {
-      setPairingDialog(await apiClient.openP2PPairing());
-    } catch (error) {
-      setAlertDialog({
-        title: '添加设备失败',
-        message: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setPairingBusy(false);
-    }
-  }, [apiClient]);
-
   useEffect(() => {
     if (
       closed &&
@@ -1090,12 +952,7 @@ function App() {
   if (!apiClient) {
     const storedToken = sessionStorage.getItem('authToken');
     if (storedToken) {
-      if (
-        initialPairingOfferRef.current ??
-        currentPairingOffer() ??
-        initialTrustedHostProfileRef.current ??
-        loadLastTrustedHostProfile()
-      ) {
+      if (hasP2PEntry()) {
         if (!p2pConnectStartedRef.current && p2pState.state === 'idle') {
           p2pConnectStartedRef.current = true;
           void connectP2PWithToken(storedToken);
@@ -1108,6 +965,16 @@ function App() {
       const client = createApiClient(storedToken, () => clearAuthState(client));
       setApiClient(client);
     } else {
+      if (hasP2PEntry()) {
+        if (!p2pConnectStartedRef.current && p2pState.state === 'idle') {
+          p2pConnectStartedRef.current = true;
+          void connectP2PWithToken(P2P_SESSION_TOKEN);
+        }
+        if (p2pState.state === 'failed') {
+          return <P2PConnectionScreen state="failed" error={p2pState.error} />;
+        }
+        return <P2PConnectionScreen state="connecting" />;
+      }
       return <Login onLogin={handleLogin} />;
     }
   }
@@ -1194,23 +1061,6 @@ function App() {
                 P2P 已连接
               </div>
             )}
-            <button
-              onClick={handleOpenPairing}
-              disabled={pairingBusy}
-              style={{
-                width: '100%',
-                padding: '0.625rem 1rem',
-                borderRadius: 8,
-                border: '1px solid #0969da',
-                background: pairingBusy ? '#eaeef2' : '#fff',
-                color: pairingBusy ? '#6a737d' : '#0969da',
-                cursor: pairingBusy ? 'not-allowed' : 'pointer',
-                fontSize: '0.9rem',
-                fontWeight: 600,
-              }}
-            >
-              添加设备
-            </button>
             <button
               onClick={handleLogout}
               style={{
@@ -1305,6 +1155,43 @@ function App() {
                 <span style={{ color: '#888' }}>
                   模型: {model ?? '未知'}
                 </span>
+              )}
+              {runId && (
+                <div
+                  role="group"
+                  aria-label="Claude 模式"
+                  style={{
+                    display: 'inline-flex',
+                    border: '1px solid #d0d7de',
+                    borderRadius: 6,
+                    overflow: 'hidden',
+                  }}
+                >
+                  {([
+                    ['auto', 'Auto'],
+                    ['plan', 'Plan'],
+                    ['bypassPermissions', 'Bypass'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => void handleModeChange(value)}
+                      aria-pressed={mode === value}
+                      style={{
+                        padding: '0.25rem 0.5rem',
+                        border: 0,
+                        borderRight: value === 'bypassPermissions' ? 0 : '1px solid #d0d7de',
+                        background: mode === value ? '#0969da' : '#fff',
+                        color: mode === value ? '#fff' : '#57606a',
+                        cursor: mode === value ? 'default' : 'pointer',
+                        fontSize: '0.78rem',
+                        fontWeight: 650,
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               )}
               {runId && effort && (
                 <span style={{ color: '#888' }}>
@@ -1459,10 +1346,6 @@ function App() {
         title={alertDialog?.title || ''}
         message={alertDialog?.message || ''}
         onClose={() => setAlertDialog(null)}
-      />
-      <PairingDialog
-        pairing={pairingDialog}
-        onClose={() => setPairingDialog(null)}
       />
     </div>
   );

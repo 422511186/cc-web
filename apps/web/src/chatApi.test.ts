@@ -1,6 +1,6 @@
 import { vi, beforeEach, afterEach } from 'vitest';
 import * as chatApi from './chatApi';
-import { closeSession, startNew, listActiveAgents, closeAgent, heartbeatSession, respond } from './chatApi';
+import { changeMode, closeSession, startNew, listActiveAgents, closeAgent, heartbeatSession, respond } from './chatApi';
 import type { CodeRelayTransport } from '@coderelay/transport';
 
 function fakeTransport(): CodeRelayTransport & {
@@ -198,5 +198,31 @@ describe('respond', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer tok' }),
       })
     );
+  });
+});
+
+describe('changeMode', () => {
+  test('通过当前 transport 修改会话级 Claude 模式', async () => {
+    const transport = fakeTransport();
+    transport.request.mockResolvedValue({ ok: true, mode: 'plan', appliesTo: 'next_turn' });
+    setChatTransportForTest(transport);
+
+    await expect(changeMode('run-1', {
+      operationId: 'mode-op-1',
+      mode: 'plan',
+      clientId: 'client-phone',
+      deviceName: 'Chrome on Android',
+    })).resolves.toEqual({ ok: true, mode: 'plan', appliesTo: 'next_turn' });
+
+    expect(transport.request).toHaveBeenCalledWith({
+      method: 'PATCH',
+      path: '/sessions/run-1/mode',
+      body: {
+        operationId: 'mode-op-1',
+        mode: 'plan',
+        clientId: 'client-phone',
+        deviceName: 'Chrome on Android',
+      },
+    });
   });
 });

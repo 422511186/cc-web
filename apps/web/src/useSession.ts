@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { ServerEvent, PendingPrompt } from "@coderelay/shared";
+import type { ClaudeSessionMode, ServerEvent, PendingPrompt } from "@coderelay/shared";
 import { HttpTransport, type CodeRelayTransport, type TransportStream } from "@coderelay/transport";
 import { clientLog } from "./diagnostics";
 import { getHttpApiBase } from "./apiBase";
@@ -33,6 +33,12 @@ export interface SessionState {
   closed: boolean;
   /** closed 的原因;未结束为 null */
   closedReason: string | null;
+  mode: ClaudeSessionMode;
+  lastPromptResolution: {
+    promptId: string;
+    resolvedByDeviceName: string;
+    decision: string;
+  } | null;
 }
 
 let sessionTransport: CodeRelayTransport | null = null;
@@ -62,6 +68,8 @@ export function useSession(runId: string | null): SessionState {
   const [effort, setEffort] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
   const [closedReason, setClosedReason] = useState<string | null>(null);
+  const [mode, setMode] = useState<ClaudeSessionMode>("auto");
+  const [lastPromptResolution, setLastPromptResolution] = useState<SessionState["lastPromptResolution"]>(null);
   const streamRef = useRef<TransportStream | null>(null);
   const rebuildingRef = useRef(false);
 
@@ -76,6 +84,8 @@ export function useSession(runId: string | null): SessionState {
       setEffort(null);
       setClosed(false);
       setClosedReason(null);
+      setMode("auto");
+      setLastPromptResolution(null);
     }
 
     switch (event.type) {
@@ -137,6 +147,14 @@ export function useSession(runId: string | null): SessionState {
       case "prompt":
         setPending(event.prompt);
         break;
+      case "prompt_resolved":
+        setPending((current) => current?.id === event.promptId ? null : current);
+        setLastPromptResolution({
+          promptId: event.promptId,
+          resolvedByDeviceName: event.resolvedByDeviceName,
+          decision: event.decision,
+        });
+        break;
       case "turn_end":
         setPending(null);
         break;
@@ -154,6 +172,9 @@ export function useSession(runId: string | null): SessionState {
       case "run_info":
         if (event.model !== undefined) setModel(event.model);
         if (event.effort !== undefined) setEffort(event.effort);
+        break;
+      case "mode_changed":
+        setMode(event.mode);
         break;
       case "closed":
         setConnected(false);
@@ -176,6 +197,8 @@ export function useSession(runId: string | null): SessionState {
     setEffort(null);
     setClosed(false);
     setClosedReason(null);
+    setMode("auto");
+    setLastPromptResolution(null);
     setConnected(false);
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
@@ -236,5 +259,17 @@ export function useSession(runId: string | null): SessionState {
     };
   }, [runId, apply]);
 
-  return { messages, pending, connected, error, status, model, effort, closed, closedReason };
+  return {
+    messages,
+    pending,
+    connected,
+    error,
+    status,
+    model,
+    effort,
+    closed,
+    closedReason,
+    mode,
+    lastPromptResolution,
+  };
 }

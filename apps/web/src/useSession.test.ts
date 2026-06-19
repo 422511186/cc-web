@@ -400,6 +400,51 @@ describe('useSession 执行状态与模型信息', () => {
     expect(result.current.pending).toBeNull();
   });
 
+  test('prompt_resolved 清空对应 pending 并记录处理设备', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({
+        type: 'prompt',
+        prompt: {
+          kind: 'permission',
+          id: 'perm-1',
+          toolName: 'Bash',
+          title: 'Claude wants to run npm test',
+          detail: 'npm test',
+        },
+      } as ServerEvent);
+      FakeEventSource.instances[0].emit({
+        type: 'prompt_resolved',
+        promptId: 'perm-1',
+        resolvedByDeviceName: 'Chrome on Android',
+        decision: 'allow',
+      } as ServerEvent);
+    });
+
+    expect(result.current.pending).toBeNull();
+    expect(result.current.lastPromptResolution).toEqual({
+      promptId: 'perm-1',
+      resolvedByDeviceName: 'Chrome on Android',
+      decision: 'allow',
+    });
+  });
+
+  test('mode_changed 更新当前会话模式', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({
+        type: 'mode_changed',
+        mode: 'plan',
+        changedByDeviceName: 'Edge on Windows',
+        appliesTo: 'next_turn',
+      } as ServerEvent);
+    });
+
+    expect(result.current.mode).toBe('plan');
+  });
+
   test('error 事件应立刻反馈错误并退出 executing,避免模型 API 失败后一直执行中', () => {
     const { result } = renderHook(() => useSession('run-1'));
 

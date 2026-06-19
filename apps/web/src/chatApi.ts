@@ -5,6 +5,8 @@ import type {
   SendMessageRequest,
   PromptAnswer,
   UploadResponse,
+  ChangeModeRequest,
+  ClaudeSessionMode,
 } from "@coderelay/shared";
 import { HttpTransport, TransportError, type CodeRelayTransport } from "@coderelay/transport";
 import { getHttpApiBase } from "./apiBase";
@@ -118,6 +120,17 @@ export async function respond(
   if (!body.ok) {
     throw new Error("pending prompt is no longer active");
   }
+}
+
+export async function changeMode(
+  runId: string,
+  request: ChangeModeRequest
+): Promise<{ ok: boolean; mode: ClaudeSessionMode; appliesTo: "current_turn" | "next_turn" }> {
+  return activeTransport().request({
+    method: "PATCH",
+    path: `/sessions/${encodeURIComponent(runId)}/mode`,
+    body: request,
+  });
 }
 
 /** 优雅分离会话(切换会话/关闭页面)。后台正在执行的任务不会被中断,会跑完后自然回收。
