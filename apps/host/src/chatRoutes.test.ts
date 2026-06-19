@@ -147,6 +147,104 @@ describe("chat routes", () => {
     expect(res.body).toEqual({ ok: false });
   });
 
+  it("POST /sessions/:runId/respond 同一权限卡片两个回答先到先得", async () => {
+    let finishTurn!: () => void;
+    const holdTurn = new Promise<void>((resolve) => {
+      finishTurn = resolve;
+    });
+    const waitingClient: SdkClient = {
+      start: async function* (params) {
+        for await (const _msg of params.prompt) {
+          await params.canUseTool(
+            "Bash",
+            { command: "npm test" },
+            { toolUseID: "tool-1", title: "Claude wants to run npm test" }
+          );
+          await holdTurn;
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "ok",
+            session_id: "s1",
+            uuid: "r1",
+          } as unknown as SDKMessage;
+          break;
+        }
+      },
+    };
+    const mgr = new SessionManager({
+      client: waitingClient,
+      permissionMode: "default",
+      maxConcurrent: 4,
+      idleTimeoutMs: 60_000,
+    });
+    const a = express();
+    a.use(express.json());
+    a.use("/api", createChatRouter(mgr));
+
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+    await request(a).post(`/api/sessions/${runId}/message`).send({ text: "run tests" });
+
+    const streamRes = await request(a)
+      .get(`/api/sessions/${runId}/stream`)
+      .buffer(true)
+      .parse((res, cb) => {
+        let data = "";
+        const stop = setTimeout(
+          () => (res as unknown as { destroy: () => void }).destroy(),
+          500
+        );
+        res.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+          if (data.includes(`"type":"prompt"`)) {
+            clearTimeout(stop);
+            (res as unknown as { destroy: () => void }).destroy();
+          }
+        });
+        res.on("close", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+        res.on("end", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+      });
+    const streamBody = (streamRes.text ?? (streamRes.body as string)) as string;
+    const promptMatch = streamBody.match(/"id":"([^"]+)"/);
+    expect(promptMatch?.[1]).toBeTruthy();
+    const promptId = promptMatch![1];
+
+    const first = await request(a)
+      .post(`/api/sessions/${runId}/respond`)
+      .send({
+        kind: "permission",
+        id: promptId,
+        decision: "allow",
+        deviceName: "Chrome on Android",
+      });
+    const second = await request(a)
+      .post(`/api/sessions/${runId}/respond`)
+      .send({
+        kind: "permission",
+        id: promptId,
+        decision: "deny",
+        deviceName: "Edge on Windows",
+      });
+
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ ok: true });
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual({
+      ok: false,
+      reason: "prompt_already_resolved",
+      resolvedByDeviceName: "Chrome on Android",
+    });
+    finishTurn();
+  });
+
   it("POST /sessions/:runId/message forwards uploaded attachment refs as uploadsDir file paths", async () => {
     const received: string[] = [];
     const client: SdkClient = {

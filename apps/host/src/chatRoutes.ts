@@ -103,6 +103,9 @@ export function createChatRouter(
   function makeOnEvent(runId: string) {
     return (event: ServerEvent) => {
       const hub = hubFor(runId);
+      if (event.type === "prompt") {
+        hub.bus.trackPrompt(event.prompt.id);
+      }
       hub.bus.publish(event);
       // 会话结束:标记 closed,保留 hub 与日志一段宽限期,
       // 让切走再切回的前端还能重连整段重放。
@@ -290,7 +293,15 @@ export function createChatRouter(
       res.status(404).json({ error: "session not found" });
       return;
     }
-    const answer = req.body as PromptAnswer;
+    const answer = req.body as PromptAnswer & { deviceName?: string };
+    const deviceName = typeof answer.deviceName === "string" && answer.deviceName.trim()
+      ? answer.deviceName.trim()
+      : "此设备";
+    const promptResolution = hubFor(runId).bus.resolvePrompt(answer.id, deviceName, decisionFromAnswer(answer));
+    if (promptResolution.reason === "prompt_already_resolved") {
+      res.json(promptResolution);
+      return;
+    }
     const ok = session.answer(answer);
     mgr.touch(runId);
     recordDebug("server", {
@@ -379,4 +390,11 @@ export function createChatRouter(
   });
 
   return router;
+}
+
+function decisionFromAnswer(answer: PromptAnswer): string {
+  if (answer.kind === "permission" || answer.kind === "plan") {
+    return answer.decision;
+  }
+  return "answered";
 }
