@@ -18,7 +18,13 @@ import { PlanCard } from './components/PlanCard';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import QRCode from 'qrcode';
-import { connectBrowserP2P, currentPairingOffer, type BrowserP2PSession } from './p2pClient';
+import {
+  connectBrowserP2P,
+  connectTrustedBrowserP2P,
+  currentPairingOffer,
+  loadLastTrustedHostProfile,
+  type BrowserP2PSession,
+} from './p2pClient';
 import type { CodeRelayTransport } from '@coderelay/transport';
 
 function isUnauthorizedError(error: unknown): boolean {
@@ -504,6 +510,7 @@ function App() {
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
   const [maxAgents, setMaxAgents] = useState(3);
   const initialPairingOfferRef = useRef(currentPairingOffer());
+  const initialTrustedHostProfileRef = useRef(loadLastTrustedHostProfile());
   const p2pConnectStartedRef = useRef(false);
   const p2pSessionRef = useRef<BrowserP2PSession | null>(null);
 
@@ -555,13 +562,21 @@ function App() {
 
   const connectP2PWithToken = useCallback(async (token: string) => {
     const offer = initialPairingOfferRef.current ?? currentPairingOffer();
-    if (!offer) {
+    const trustedHostProfile = offer ? null : initialTrustedHostProfileRef.current ?? loadLastTrustedHostProfile();
+    if (!offer && !trustedHostProfile) {
       return false;
     }
 
     setP2PState({ state: 'connecting' });
     try {
-      const session = await connectBrowserP2P(offer);
+      let session: BrowserP2PSession;
+      if (offer) {
+        session = await connectBrowserP2P(offer);
+      } else if (trustedHostProfile) {
+        session = await connectTrustedBrowserP2P(trustedHostProfile);
+      } else {
+        return false;
+      }
       p2pSessionRef.current = session;
       installP2PTransport(session.transport);
       const client = createApiClient(token, () => clearAuthState(client), session.transport);
@@ -844,7 +859,12 @@ function App() {
 
   const handleLogin = (token: string) => {
     sessionStorage.setItem('authToken', token);
-    if (initialPairingOfferRef.current ?? currentPairingOffer()) {
+    if (
+      initialPairingOfferRef.current ??
+      currentPairingOffer() ??
+      initialTrustedHostProfileRef.current ??
+      loadLastTrustedHostProfile()
+    ) {
       p2pConnectStartedRef.current = true;
       void connectP2PWithToken(token);
       return;
@@ -1070,7 +1090,12 @@ function App() {
   if (!apiClient) {
     const storedToken = sessionStorage.getItem('authToken');
     if (storedToken) {
-      if (initialPairingOfferRef.current ?? currentPairingOffer()) {
+      if (
+        initialPairingOfferRef.current ??
+        currentPairingOffer() ??
+        initialTrustedHostProfileRef.current ??
+        loadLastTrustedHostProfile()
+      ) {
         if (!p2pConnectStartedRef.current && p2pState.state === 'idle') {
           p2pConnectStartedRef.current = true;
           void connectP2PWithToken(storedToken);
@@ -1121,6 +1146,38 @@ function App() {
             flexDirection: 'column',
             gap: '0.5rem',
           }}>
+            <div style={{
+              width: '100%',
+              padding: '0.45rem 0.65rem',
+              boxSizing: 'border-box',
+              borderRadius: 6,
+              border: p2pState.state === 'connected'
+                ? '1px solid #1f883d33'
+                : p2pState.state === 'failed'
+                  ? '1px solid #d1242f33'
+                  : '1px solid #d0d7de',
+              background: p2pState.state === 'connected'
+                ? '#1f883d12'
+                : p2pState.state === 'failed'
+                  ? '#d1242f12'
+                  : '#fff',
+              color: p2pState.state === 'connected'
+                ? '#1f883d'
+                : p2pState.state === 'failed'
+                  ? '#d1242f'
+                  : '#57606a',
+              fontSize: '0.78rem',
+              fontWeight: 650,
+              textAlign: 'center',
+            }}>
+              {p2pState.state === 'connected'
+                ? '协议：P2P'
+                : p2pState.state === 'connecting'
+                  ? '协议：P2P 连接中'
+                  : p2pState.state === 'failed'
+                    ? '协议：HTTP（P2P 失败）'
+                    : '协议：HTTP'}
+            </div>
             {p2pState.state === 'connected' && (
               <div style={{
                 width: '100%',

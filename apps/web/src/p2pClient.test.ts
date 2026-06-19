@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { createChallenge, createDeviceIdentity } from "@coderelay/p2p-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createChallenge, createDeviceIdentity, createTrustedDeviceStore, trustHost } from "@coderelay/p2p-core";
 import { connectBrowserP2P, decodePairingOfferFromUrl } from "./p2pClient";
+
+beforeEach(() => {
+  localStorage.clear();
+});
 
 describe("decodePairingOfferFromUrl", () => {
   it("decodes the p2p pairing offer from a scanned URL", () => {
@@ -184,6 +188,20 @@ describe("connectBrowserP2P", () => {
     const session = await sessionPromise;
     expect(peer.remoteDescriptions).toEqual([{ type: "answer", sdp: "answer-sdp" }]);
     expect(session.connectionId).toBe("conn-test");
+    expect(JSON.parse(localStorage.getItem("coderelay-last-trusted-host-v1") ?? "null")).toEqual({
+      protocol: "coderelay-trusted-host-v1",
+      webUrl: "http://web.test/",
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      hostPublicKeyJwk: {
+        kty: "EC",
+        crv: "P-256",
+        x: "host-x",
+        y: "host-y",
+      },
+      hostPublicKeyFingerprint: "host-fingerprint",
+      updatedAt: expect.any(String),
+    });
 
     const response = session.transport.request<{ ok: boolean }>({
       method: "GET",
@@ -194,6 +212,92 @@ describe("connectBrowserP2P", () => {
     channel.message(JSON.stringify({ type: "response", id: requestFrame.id, status: 200, body: { ok: true } }));
 
     await expect(response).resolves.toEqual({ ok: true });
+  });
+
+  it("reconnects to a previously trusted Host without opening a new pairing", async () => {
+    const p2pClient = await import("./p2pClient") as Record<string, unknown>;
+    const connectTrustedBrowserP2P = p2pClient.connectTrustedBrowserP2P as (
+      profile: ReturnType<typeof trustedHostProfile>,
+      options: Parameters<typeof connectBrowserP2P>[1],
+    ) => ReturnType<typeof connectBrowserP2P>;
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    localStorage.setItem(
+      "coderelay-trusted-device-store-v1",
+      JSON.stringify(
+        trustHost(createTrustedDeviceStore(), {
+          hostId: "host-test",
+          hostPublicKeyJwk: pairingOffer().hostPublicKeyJwk,
+          displayName: "host-test",
+        })
+      )
+    );
+    const socket = new FakeWebSocket();
+    const channel = new FakeDataChannel();
+    const peer = new FakePeerConnection(channel);
+    const createRequestId = vi.fn().mockReturnValueOnce("connect-req-phone");
+
+    const sessionPromise = connectTrustedBrowserP2P(trustedHostProfile(), {
+      createWebSocket: (url) => {
+        expect(url).toBe("ws://signal.test/");
+        queueMicrotask(() => socket.open());
+        return socket as unknown as WebSocket;
+      },
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      loadClientIdentity: () => Promise.resolve(clientIdentity),
+      createRequestId,
+      timeoutMs: 1000,
+    });
+
+    await waitFor(() =>
+      socket.sent.some((message) => message.type === "client.connect" && message.clientId === "client-phone")
+    );
+    expect(socket.sent.some((message) => message.type === "pairing.request")).toBe(false);
+    expect(socket.sent).toContainEqual(
+      expect.objectContaining({
+        type: "client.connect",
+        requestId: "connect-req-phone",
+        hostId: "host-test",
+        clientId: "client-phone",
+        clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+        clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+      })
+    );
+
+    const challenge = createChallenge({
+      challengeId: "challenge-phone",
+      nonce: "nonce-phone",
+      issuedAt: "2026-06-19T00:00:00.000Z",
+    });
+    socket.message({
+      type: "connection.challenge",
+      requestId: "connect-req-phone",
+      hostId: "host-test",
+      clientId: "client-phone",
+      challenge,
+    });
+    await waitFor(() => socket.sent.some((message) => message.type === "connection.challenge_response"));
+    socket.message({
+      type: "connection.accepted",
+      requestId: "connect-req-phone",
+      connectionId: "conn-test",
+      hostId: "host-test",
+      clientId: "client-phone",
+    });
+    await waitFor(() => socket.sent.some((message) => message.type === "webrtc.offer"));
+    socket.message({
+      type: "webrtc.answer",
+      connectionId: "conn-test",
+      sdp: "answer-sdp",
+    });
+    channel.open();
+
+    await expect(sessionPromise).resolves.toEqual(expect.objectContaining({
+      connectionId: "conn-test",
+      clientId: "client-phone",
+    }));
   });
 });
 
@@ -213,6 +317,19 @@ function pairingOffer() {
     pairingId: "pair-test",
     pairingSecret: "secret-test",
     expiresAt: "2999-06-19T00:02:00.000Z",
+  };
+}
+
+function trustedHostProfile() {
+  const offer = pairingOffer();
+  return {
+    protocol: "coderelay-trusted-host-v1" as const,
+    webUrl: offer.webUrl,
+    signalUrl: offer.signalUrl,
+    hostId: offer.hostId,
+    hostPublicKeyJwk: offer.hostPublicKeyJwk,
+    hostPublicKeyFingerprint: offer.hostPublicKeyFingerprint,
+    updatedAt: "2026-06-19T00:00:00.000Z",
   };
 }
 

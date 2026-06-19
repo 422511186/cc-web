@@ -14,6 +14,7 @@ const mockApiClient = {
 };
 let unauthorizedHandler: (() => void) | undefined;
 let mockCurrentPairingOffer: unknown = null;
+let mockLastTrustedHostProfile: unknown = null;
 const mockP2PTransport = {
   request: vi.fn(),
   subscribe: vi.fn(),
@@ -109,7 +110,9 @@ vi.mock('./diagnostics', () => ({
 
 vi.mock('./p2pClient', () => ({
   currentPairingOffer: vi.fn(() => mockCurrentPairingOffer),
+  loadLastTrustedHostProfile: vi.fn(() => mockLastTrustedHostProfile),
   connectBrowserP2P: vi.fn(() => Promise.resolve(mockP2PSession)),
+  connectTrustedBrowserP2P: vi.fn(() => Promise.resolve(mockP2PSession)),
 }));
 
 vi.mock('qrcode', () => ({
@@ -134,6 +137,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   unauthorizedHandler = undefined;
   mockCurrentPairingOffer = null;
+  mockLastTrustedHostProfile = null;
   mockOpenP2PPairing.mockResolvedValue({
     offer: {
       protocol: 'coderelay-pairing-v1',
@@ -412,6 +416,39 @@ describe('App P2P 配对与传输切换', () => {
     expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
+  });
+
+  test('普通首页存在已绑定 Host 时自动恢复 P2P 并把业务请求切到 P2PTransport', async () => {
+    const chatApi = await import('./chatApi');
+    const sessionModule = await import('./useSession');
+    const diagnostics = await import('./diagnostics');
+    const p2pClient = await import('./p2pClient');
+    mockLastTrustedHostProfile = {
+      protocol: 'coderelay-trusted-host-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      updatedAt: '2026-06-19T00:00:00.000Z',
+    };
+
+    render(<App />);
+
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    expect(await screen.findByText('协议：P2P')).toBeInTheDocument();
+    expect(p2pClient.connectTrustedBrowserP2P).toHaveBeenCalledWith(mockLastTrustedHostProfile);
+    expect(p2pClient.connectBrowserP2P).not.toHaveBeenCalled();
+    expect(chatApi.setChatTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
+    expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
+  });
+
+  test('普通 HTTP 模式也明确显示当前协议', async () => {
+    render(<App />);
+
+    expect(await screen.findByText('协议：HTTP')).toBeInTheDocument();
   });
 });
 

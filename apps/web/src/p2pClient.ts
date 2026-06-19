@@ -3,6 +3,7 @@ import {
   createDeviceIdentity,
   createPairingProof,
   createTrustedDeviceStore,
+  isTrustedHost,
   signChallenge,
   trustHost,
   verifyPairingOffer,
@@ -30,6 +31,16 @@ export interface BrowserP2PSession {
   close(): void;
 }
 
+export interface BrowserTrustedHostProfile {
+  readonly protocol: "coderelay-trusted-host-v1";
+  readonly webUrl: string;
+  readonly signalUrl: string;
+  readonly hostId: string;
+  readonly hostPublicKeyJwk: JsonWebKey;
+  readonly hostPublicKeyFingerprint: string;
+  readonly updatedAt: string;
+}
+
 export interface BrowserP2PConnectOptions {
   readonly createWebSocket?: (url: string) => WebSocket;
   readonly createPeerConnection?: () => RTCPeerConnection;
@@ -45,6 +56,7 @@ const DATA_CHANNEL_LABEL = "coderelay";
 const CLIENT_ID_STORAGE_KEY = "coderelay-client-id";
 const CLIENT_IDENTITY_STORAGE_KEY = "coderelay-client-identity-v1";
 const TRUSTED_DEVICE_STORE_KEY = "coderelay-trusted-device-store-v1";
+const LAST_TRUSTED_HOST_PROFILE_KEY = "coderelay-last-trusted-host-v1";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export function decodePairingOfferFromUrl(url: string): BrowserPairingOffer | null {
@@ -68,6 +80,31 @@ export function currentPairingOffer(): BrowserPairingOffer | null {
   return decodePairingOfferFromUrl(window.location.href);
 }
 
+export function loadLastTrustedHostProfile(): BrowserTrustedHostProfile | null {
+  const stored = localStorage.getItem(LAST_TRUSTED_HOST_PROFILE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  try {
+    const profile = JSON.parse(stored) as unknown;
+    if (!isTrustedHostProfile(profile)) {
+      localStorage.removeItem(LAST_TRUSTED_HOST_PROFILE_KEY);
+      return null;
+    }
+
+    if (!isTrustedHost(loadTrustedDeviceStore(), profile.hostId, profile.hostPublicKeyJwk)) {
+      localStorage.removeItem(LAST_TRUSTED_HOST_PROFILE_KEY);
+      return null;
+    }
+
+    return profile;
+  } catch {
+    localStorage.removeItem(LAST_TRUSTED_HOST_PROFILE_KEY);
+    return null;
+  }
+}
+
 export async function connectBrowserP2P(
   offer: BrowserPairingOffer,
   options: BrowserP2PConnectOptions = {},
@@ -82,7 +119,6 @@ export async function connectBrowserP2P(
   const socket = await openSignalSocket(offer.signalUrl, options.createWebSocket, timeoutMs);
   const signal = new BrowserSignalClient(socket);
   const pairingRequestId = nextRequestId(options, "pair");
-  const connectionRequestId = nextRequestId(options, "connect");
   const proof = await createPairingProof(offer, clientIdentity);
 
   signal.send({
@@ -111,10 +147,64 @@ export async function connectBrowserP2P(
 
   rememberTrustedHost(offer);
 
+  return connectTrustedHostOverSignal({
+    signal,
+    socket,
+    hostId: offer.hostId,
+    clientIdentity,
+    options,
+    timeoutMs,
+  });
+}
+
+export async function connectTrustedBrowserP2P(
+  profile: BrowserTrustedHostProfile,
+  options: BrowserP2PConnectOptions = {},
+): Promise<BrowserP2PSession> {
+  if (!isTrustedHostProfile(profile)) {
+    throw new Error("可信 Host 配置无效");
+  }
+
+  if (!isTrustedHost(loadTrustedDeviceStore(), profile.hostId, profile.hostPublicKeyJwk)) {
+    throw new Error("Host 未绑定或已被撤销");
+  }
+
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const clientIdentity = await loadClientIdentity(options);
+  const socket = await openSignalSocket(profile.signalUrl, options.createWebSocket, timeoutMs);
+  const signal = new BrowserSignalClient(socket);
+
+  return connectTrustedHostOverSignal({
+    signal,
+    socket,
+    hostId: profile.hostId,
+    clientIdentity,
+    options,
+    timeoutMs,
+  });
+}
+
+async function connectTrustedHostOverSignal({
+  signal,
+  socket,
+  hostId,
+  clientIdentity,
+  options,
+  timeoutMs,
+}: {
+  readonly signal: BrowserSignalClient;
+  readonly socket: WebSocket;
+  readonly hostId: string;
+  readonly clientIdentity: DeviceIdentity;
+  readonly options: BrowserP2PConnectOptions;
+  readonly timeoutMs: number;
+}): Promise<BrowserP2PSession> {
+  const connectionRequestId = nextRequestId(options, "connect");
+
   signal.send({
     type: "client.connect",
     requestId: connectionRequestId,
-    hostId: offer.hostId,
+    hostId,
     clientId: clientIdentity.deviceId,
     clientPublicKeyJwk: clientIdentity.publicKeyJwk,
     clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
@@ -124,7 +214,7 @@ export async function connectBrowserP2P(
     (message) =>
       message.type === "connection.challenge" &&
       message.requestId === connectionRequestId &&
-      message.hostId === offer.hostId &&
+      message.hostId === hostId &&
       message.clientId === clientIdentity.deviceId,
     timeoutMs,
     "等待 Host 连接挑战超时",
@@ -136,7 +226,7 @@ export async function connectBrowserP2P(
   signal.send({
     type: "connection.challenge_response",
     requestId: connectionRequestId,
-    hostId: offer.hostId,
+    hostId,
     clientId: clientIdentity.deviceId,
     proof: await signChallenge(clientIdentity, challenge),
   });
@@ -145,7 +235,7 @@ export async function connectBrowserP2P(
     (message) =>
       message.type === "connection.accepted" &&
       message.requestId === connectionRequestId &&
-      message.hostId === offer.hostId &&
+      message.hostId === hostId &&
       message.clientId === clientIdentity.deviceId,
     timeoutMs,
     "等待 Host 接受 P2P 连接超时",
@@ -383,6 +473,24 @@ function challengeField(message: SignalMessage, key: string): Challenge | undefi
   return undefined;
 }
 
+function isTrustedHostProfile(value: unknown): value is BrowserTrustedHostProfile {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const profile = value as Partial<BrowserTrustedHostProfile>;
+  return (
+    profile.protocol === "coderelay-trusted-host-v1" &&
+    typeof profile.webUrl === "string" &&
+    typeof profile.signalUrl === "string" &&
+    typeof profile.hostId === "string" &&
+    typeof profile.hostPublicKeyFingerprint === "string" &&
+    typeof profile.updatedAt === "string" &&
+    typeof profile.hostPublicKeyJwk === "object" &&
+    profile.hostPublicKeyJwk !== null
+  );
+}
+
 async function loadClientIdentity(options: BrowserP2PConnectOptions): Promise<DeviceIdentity> {
   if (options.loadClientIdentity) {
     return options.loadClientIdentity();
@@ -412,6 +520,15 @@ function rememberTrustedHost(offer: BrowserPairingOffer): void {
     displayName: offer.hostId,
   });
   localStorage.setItem(TRUSTED_DEVICE_STORE_KEY, JSON.stringify(trusted));
+  localStorage.setItem(LAST_TRUSTED_HOST_PROFILE_KEY, JSON.stringify({
+    protocol: "coderelay-trusted-host-v1",
+    webUrl: offer.webUrl,
+    signalUrl: offer.signalUrl,
+    hostId: offer.hostId,
+    hostPublicKeyJwk: offer.hostPublicKeyJwk,
+    hostPublicKeyFingerprint: offer.hostPublicKeyFingerprint,
+    updatedAt: new Date().toISOString(),
+  } satisfies BrowserTrustedHostProfile));
 }
 
 function loadTrustedDeviceStore(): TrustedDeviceStore {
