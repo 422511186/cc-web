@@ -27,6 +27,43 @@ describe("decodePairingOfferFromUrl", () => {
 });
 
 describe("connectBrowserP2P", () => {
+  it("connects on browsers that do not provide crypto.randomUUID", async () => {
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+    localStorage.clear();
+    const socket = new FakeWebSocket();
+
+    try {
+      const sessionPromise = connectBrowserP2P(pairingOffer(), {
+        createWebSocket: () => {
+          queueMicrotask(() => socket.open());
+          return socket as unknown as WebSocket;
+        },
+        createPeerConnection: () => new FakePeerConnection(new FakeDataChannel()) as unknown as RTCPeerConnection,
+        timeoutMs: 1000,
+      });
+
+      await waitFor(() => socket.sent.some((message) => message.type === "pairing.request"));
+      expect(socket.sent.find((message) => message.type === "pairing.request")).toEqual(
+        expect.objectContaining({
+          requestId: expect.stringMatching(/^pair-/),
+          clientId: expect.stringMatching(/^client-/),
+        })
+      );
+      expect(localStorage.getItem("coderelay-client-id")).toMatch(/^client-/);
+
+      await expect(sessionPromise).rejects.toThrow("等待 Host 接受设备配对超时");
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: originalRandomUUID,
+      });
+    }
+  });
+
   it("connects through Signal, opens a WebRTC DataChannel, and returns a P2P transport", async () => {
     const clientIdentity = await createDeviceIdentity({
       deviceId: "client-phone",

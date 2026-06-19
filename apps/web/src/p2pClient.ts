@@ -429,7 +429,7 @@ function loadTrustedDeviceStore(): TrustedDeviceStore {
 }
 
 function nextRequestId(options: BrowserP2PConnectOptions, prefix: string): string {
-  return options.createRequestId?.() ?? `${prefix}-${crypto.randomUUID()}`;
+  return options.createRequestId?.() ?? `${prefix}-${createRandomId()}`;
 }
 
 function getOrCreateClientId(): string {
@@ -437,9 +437,19 @@ function getOrCreateClientId(): string {
   if (stored) {
     return stored;
   }
-  const next = `client-${crypto.randomUUID()}`;
+  const next = `client-${createRandomId()}`;
   localStorage.setItem(CLIENT_ID_STORAGE_KEY, next);
   return next;
+}
+
+function createRandomId(): string {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function base64UrlDecode(value: string): string {
