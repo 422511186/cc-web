@@ -113,6 +113,7 @@ vi.mock('./p2pClient', () => ({
   currentPairingOffer: vi.fn(() => mockCurrentPairingOffer),
   loadLastTrustedHostProfile: vi.fn(() => mockLastTrustedHostProfile),
   connectBrowserP2P: vi.fn(() => Promise.resolve(mockP2PSession)),
+  connectBrowserP2PFromPairCode: vi.fn(() => Promise.resolve(mockP2PSession)),
   connectTrustedBrowserP2P: vi.fn(() => Promise.resolve(mockP2PSession)),
 }));
 
@@ -375,7 +376,7 @@ describe('App 退出登录', () => {
 
 describe('App P2P 配对与传输切换', () => {
   beforeEach(() => {
-    window.history.pushState({}, '', window.location.pathname);
+    window.history.pushState({}, '', '/');
     Storage.prototype.getItem = vi.fn((key) => {
       if (key === 'authToken') return 'test-token';
       return null;
@@ -414,11 +415,33 @@ describe('App P2P 配对与传输切换', () => {
     render(<App />);
 
     expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
-    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(mockCurrentPairingOffer);
+    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(
+      mockCurrentPairingOffer,
+      expect.objectContaining({ onDeviceRevoked: expect.any(Function) })
+    );
     expect(chatApi.setChatTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
+  });
+
+  test('短码配对链接进入后通过 Signal lookup 建立 P2P', async () => {
+    const p2pClient = await import('./p2pClient');
+    vi.stubEnv('VITE_CODERELAY_SIGNAL_URL', 'ws://signal.test/');
+    window.history.pushState({}, '', '/pair/ABCD12');
+
+    render(<App />);
+
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    expect(p2pClient.connectBrowserP2PFromPairCode).toHaveBeenCalledWith(
+      'ABCD12',
+      expect.objectContaining({
+        signalUrl: 'ws://signal.test/',
+        onDeviceRevoked: expect.any(Function),
+      })
+    );
+    expect(p2pClient.connectBrowserP2P).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 
   test('扫码链接进入且本机没有 token 时也直接连接 P2P，不显示 access token 登录页', async () => {
@@ -441,7 +464,10 @@ describe('App P2P 配对与传输切换', () => {
 
     expect(screen.queryByTestId('login')).not.toBeInTheDocument();
     expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
-    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(mockCurrentPairingOffer);
+    expect(p2pClient.connectBrowserP2P).toHaveBeenCalledWith(
+      mockCurrentPairingOffer,
+      expect.objectContaining({ onDeviceRevoked: expect.any(Function) })
+    );
     expect(createApiClient).toHaveBeenCalledWith('p2p-session', expect.any(Function), mockP2PTransport);
   });
 
@@ -506,12 +532,41 @@ describe('App P2P 配对与传输切换', () => {
 
     expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
     expect(await screen.findByText('协议：P2P')).toBeInTheDocument();
-    expect(p2pClient.connectTrustedBrowserP2P).toHaveBeenCalledWith(mockLastTrustedHostProfile);
+    expect(p2pClient.connectTrustedBrowserP2P).toHaveBeenCalledWith(
+      mockLastTrustedHostProfile,
+      expect.objectContaining({ onDeviceRevoked: expect.any(Function) })
+    );
     expect(p2pClient.connectBrowserP2P).not.toHaveBeenCalled();
     expect(chatApi.setChatTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(sessionModule.setSessionTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(diagnostics.setDiagnosticsTransport).toHaveBeenCalledWith(mockP2PTransport);
     expect(createApiClient).toHaveBeenCalledWith('test-token', expect.any(Function), mockP2PTransport);
+  });
+
+  test('P2P 设备被 Host 撤销后显示重新授权提示', async () => {
+    const p2pClient = await import('./p2pClient');
+    mockLastTrustedHostProfile = {
+      protocol: 'coderelay-trusted-host-v1',
+      webUrl: 'http://web.test/',
+      signalUrl: 'ws://signal.test/',
+      hostId: 'host-test',
+      hostPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'host-x', y: 'host-y' },
+      hostPublicKeyFingerprint: 'host-fingerprint',
+      updatedAt: '2026-06-19T00:00:00.000Z',
+    };
+
+    render(<App />);
+
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    const options = vi.mocked(p2pClient.connectTrustedBrowserP2P).mock.calls[0][1] as {
+      onDeviceRevoked: (message: string) => void;
+    };
+    act(() => {
+      options.onDeviceRevoked('此设备授权已被 Host 撤销，请在电脑端重新扫码或获取新的授权链接。');
+    });
+
+    expect(await screen.findByText('P2P 连接失败')).toBeInTheDocument();
+    expect(screen.getByText('此设备授权已被 Host 撤销，请在电脑端重新扫码或获取新的授权链接。')).toBeInTheDocument();
   });
 
   test('普通 HTTP 模式也明确显示当前协议', async () => {

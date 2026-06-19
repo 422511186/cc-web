@@ -29,6 +29,10 @@ export function clientLog(event: string, detail: ClientLogDetail = {}): void {
   console.debug("[cc-web:client]", payload);
 
   try {
+    if (!diagnosticsTransport && !sessionStorage.getItem("authToken")) {
+      return;
+    }
+
     void activeTransport().request<void, typeof payload>({
       method: "POST",
       path: "/debug/client-log",

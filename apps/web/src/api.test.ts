@@ -167,12 +167,14 @@ describe('ApiClient transport injection', () => {
         expiresAt: '2026-06-19T00:02:00.000Z',
       },
       pairingUrl: 'http://web.test/?p2p=encoded',
+      qrDataUrl: 'data:image/png;base64,qr',
     });
 
     const client = createApiClient('test-token-123', undefined, transport);
     const result = await client.openP2PPairing();
 
     expect(result.pairingUrl).toBe('http://web.test/?p2p=encoded');
+    expect(result.qrDataUrl).toBe('data:image/png;base64,qr');
     expect(transport.request).toHaveBeenCalledWith({
       method: 'POST',
       path: '/p2p/pairing',

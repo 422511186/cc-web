@@ -12,6 +12,7 @@ import { SessionManager } from "./sessionManager.js";
 import { createChatRouter } from "./chatRoutes.js";
 import { createUploadRouter } from "./uploads.js";
 import { createP2PRouter, type HostP2PRuntimeApi } from "./p2pRoutes.js";
+import { createHostManagementPage } from "./p2pManagementPage.js";
 
 /**
  * 组装 Express 应用:鉴权前置,然后挂载浏览路由(计划一)与续聊/上传路由(计划二)。
@@ -35,11 +36,16 @@ export function createApp(
     res.json({ ok: true, service: "coderelay-host" });
   });
 
+  app.get(["/host", "/host/"], (_req, res) => {
+    res.type("html").send(createHostManagementPage());
+  });
+
+  app.use("/api", createP2PRouter(p2pRuntime));
+
   // 鉴权前置于所有 /api 路由
   app.use("/api", createAuthMiddleware(config.authToken));
 
   // 浏览路由(projects / sessions / search / image / events)
-  app.use("/api", createP2PRouter(p2pRuntime));
   app.use("/api", createRouter(store, sseManager, config.imageCacheDir));
 
   // 续聊 + 上传

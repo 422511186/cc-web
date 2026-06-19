@@ -92,6 +92,13 @@ cd apps/host && npx vitest run -t "should parse user messages"
 | `SESSION_IDLE_TIMEOUT_MS` | `180000`（3 分钟） | 活跃会话空闲超时；执行/产出事件会续期 |
 | `MAX_CONCURRENT_SESSIONS` | `3` | 活跃 agent 并发上限；超限新建/续聊返回 409，需先关闭已有 agent |
 | `UPLOADS_DIR` | `<cwd>/uploads` | 附件上传保存目录 |
+| `P2P_SIGNAL_URL` / `PUBLIC_SIGNAL_URL` | （空） | Host 连接并写入二维码的 Signal WebSocket 地址；脚本中 `PUBLIC_SIGNAL_URL` 会同步到 `P2P_SIGNAL_URL` |
+| `P2P_WEB_URL` / `PUBLIC_WEB_BASE_URL` | （空） | Host 生成 `/pair/<code>` 短链时使用的 Web 地址；脚本中 `PUBLIC_WEB_BASE_URL` 会同步到 `P2P_WEB_URL` |
+| `P2P_HOST_ID` | `coderelay-local-host`（脚本） | Signal 上注册的 Host 标识 |
+| `P2P_ICE_LOCAL_ADDRESS(S)` | （空） | Host WebRTC 可额外公布的本机/虚拟网卡地址 |
+| `P2P_STATE_FILE` | （空） | Host P2P 身份与可信设备存储文件 |
+
+Web 前端额外读取 `VITE_CODERELAY_API_BASE`（HTTP API 覆盖）和 `VITE_CODERELAY_SIGNAL_URL`（`/pair/<code>` 短码 lookup 所用 Signal 地址）。生产部署到 Vercel 等静态平台时，前端可托管在云端，Signal/Host 仍由用户自己的 Host 或中继服务提供；二维码里的 Web/Signal 地址以 Host 管理页当前设置为准。
 
 Windows 下可直接用根目录的 `start-host.bat` / `start-web.bat`（`start-server.bat` 保留为兼容包装，已预设上述变量，`AUTH_TOKEN=test-token-123456` 为开发令牌）。
 
@@ -103,7 +110,7 @@ Windows 下可直接用根目录的 `start-host.bat` / `start-web.bat`（`start-
 
 - `apps/host`（`@coderelay/host`）：Node + Express Host 服务。
 - `apps/web`（`@coderelay/web`）：React + Vite 前端。
-- `apps/signal`（`@coderelay/signal`）：后续 P2P 信令服务 scaffold。
+- `apps/signal`（`@coderelay/signal`）：P2P 信令服务。负责 Host 上线、短码 `pairCode -> offer` lookup、配对请求转发、可信设备重连挑战、WebRTC offer/answer/candidate 转发和 TURN 配置下发。
 - `packages/shared`（`@coderelay/shared`）：共享类型与契约。`types.ts` 领域模型、`api.ts` REST 请求/响应类型、`events.ts`（续聊核心契约：`ServerEvent` SSE 事件、`PendingPrompt` 待答事项、`PromptAnswer` 回答）。会被编译成 `dist/`，host 与 web 通过 `dist` 的类型声明引用它。**改了 shared 后需重新构建**才能让其它包拿到最新类型。
 - `packages/transport`、`packages/p2p-core`、`packages/test-utils`：后续 Transport、P2P Core 与测试工具包 scaffold。
 
@@ -140,6 +147,7 @@ TS 项目引用（project references）：host/web 的 `tsconfig.json` 都 `refe
 - `pending.ts`：`PendingRegistry`，登记待答项返回 `{id, promise}`，`settle(id, answer)` 兑现、`rejectAll` 关闭时拒绝。
 - `sseChannel.ts`：`SSEChannel`，单条 SSE 连接的写封装。
 - `uploads.ts`：`createUploadRouter`，`POST /api/uploads` 接收附件存到 `UPLOADS_DIR`，返回引用。
+- `p2pRuntime.ts` / `p2pRoutes.ts` / `p2pManagementPage.ts`：Host P2P 管理面。`/host` 是默认 HTTP 管理页，不需要 access token；`/api/host/settings`、`/api/p2p/management`、`/api/p2p/pairing`、`/api/p2p/devices/:clientId` 也供该页面免 token 使用。二维码由 Host 生成，格式为 Web 短链 `/pair/<pairCode>`；Signal 保存短码到完整 offer 的映射。设备撤销会先通过 DataChannel 发送 `device_revoked`，再关闭 peer，让手机端提示重新授权。
 
 注意：`*.test.ts` 在 host `tsconfig.json` 中被 `exclude`（测试由 Vitest 跑，不进构建产物）。
 
@@ -149,7 +157,7 @@ TS 项目引用（project references）：host/web 的 `tsconfig.json` 都 `refe
 - `useSession.ts`：把续聊 SSE 流（`GET /sessions/:runId/stream`）归约成 `SessionState`（messages/pending/connected/status/model/closed/closedReason…）。runId 变化时复位上一会话终态，`onopen` 复位 closed，收到 `closed` 事件置终态。
 - `chatApi.ts`：续聊 REST 封装（`startNew`/`startContinue`/`sendMessage`/`respond`/`closeSession`/`abortSession`/`uploadFile`），带 Bearer 头。`closeSession` 用 `keepalive` 让卸载时仍能发出、失败静默。
 - `api.ts`：`createApiClient(token)`，浏览类请求封装。
-- `components/`：`Login`、`Sidebar`（项目/会话列表 + 搜索）、`Conversation`（消息流）、`MobileMenu`（手机抽屉侧栏）、`Composer`（输入框 + 附件）、`QuestionCard`/`PermissionCard`/`PlanCard`（三类待答卡片）、`ConfirmDialog`/`AlertDialog`、`DiffView`/`AttachmentPreview`。
+- `components/`：`Login`、`Sidebar`（项目/会话列表 + 搜索）、`Conversation`（消息流）、`MobileMenu`（手机抽屉侧栏）、`Composer`（输入框 + 图片上传入口）、`QuestionCard`/`PermissionCard`/`PlanCard`（三类待答卡片）、`ConfirmDialog`/`AlertDialog`、`DiffView`/`AttachmentPreview`。
 - `diff.ts`：文本 diff 计算（供 DiffView 渲染工具改动）。
 - 响应式：`responsive.css` 负责手机布局，`markdown.css` 负责消息内容渲染。
 - 测试用 Vitest + jsdom + Testing Library，setup 在 `src/test/setup.ts`；`*.test.tsx` 在 `tsconfig.json` 中被 `exclude`（构建用，测试单独跑）。
@@ -159,6 +167,7 @@ TS 项目引用（project references）：host/web 的 `tsconfig.json` 都 `refe
 - 浏览/搜索：普通 REST（GET）。
 - 文件变更通知：浏览 SSE（`GET /api/events`，单向后端→前端，自动重连）。EventSource 不支持自定义头，鉴权通过中间件处理。
 - 续聊：`POST` 提交消息/回答/控制，`GET /api/sessions/:runId/stream` 用 SSE 接收流式回复与待答事项。**重连会整段重放事件日志**，故前端归约需对重复事件幂等、并以最后一个 `status`/`closed` 为准。
+- P2P：HTTP 与 P2P 是同一业务 API 的两种 Transport。Web 首次扫码访问 `/pair/<code>` 时连接 Signal 做 `pairing.lookup`，拿到 offer 后完成配对和 WebRTC DataChannel；后续普通首页可用本地存储的 Host 公钥走可信设备重连。Signal 只负责上线、短码和 WebRTC 信令；建立 DataChannel 后聊天、切换会话、权限确认和 plan 审批都走 P2PTransport。当前“中继”仅指标准 TURN/coturn 的 ICE relay，不实现自研业务 Transit。
 
 ## 测试约定
 

@@ -66,4 +66,18 @@ describe("client diagnostics", () => {
 
     setter?.(null);
   });
+
+  test("没有真实 HTTP token 时不通过 HTTP fallback 上报诊断日志", () => {
+    Storage.prototype.getItem = vi.fn(() => null);
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    clientLog("p2p.connecting", { runId: "run-pending" });
+
+    expect(console.debug).toHaveBeenCalledWith(
+      "[cc-web:client]",
+      expect.objectContaining({ event: "p2p.connecting" })
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

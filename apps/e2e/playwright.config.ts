@@ -72,6 +72,7 @@ export default defineConfig({
       env: {
         ...inheritedEnv,
         CODERELAY_DEV_API_TARGET: hostUrl,
+        VITE_CODERELAY_SIGNAL_URL: signalUrl,
       },
     },
   ],

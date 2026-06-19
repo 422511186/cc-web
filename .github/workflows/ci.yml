@@ -33,6 +33,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Run workspace unit tests
+        run: npm test
+
       - name: Test with coverage thresholds
         run: npm run test:coverage
 

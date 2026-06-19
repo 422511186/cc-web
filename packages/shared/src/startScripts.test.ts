@@ -15,6 +15,8 @@ describe("Windows startup scripts", () => {
     const content = script("start-host.bat");
 
     expect(content).toContain("P2P_SIGNAL_URL");
+    expect(content).toContain("PUBLIC_SIGNAL_URL");
+    expect(content).toContain("PUBLIC_WEB_BASE_URL");
     expect(content).toContain("P2P_HOST_ID");
     expect(content).toContain("P2P_WEB_URL");
     expect(content).toContain("P2P_ICE_LOCAL_ADDRESS");
@@ -25,7 +27,10 @@ describe("Windows startup scripts", () => {
   it("start-web.bat points users at the Host UI where they can add devices", () => {
     const content = script("start-web.bat");
 
-    expect(content).toContain("添加设备");
+    expect(content).toContain("Host 管理页");
+    expect(content).toContain("http://localhost:3002/host");
+    expect(content).toContain("VITE_CODERELAY_SIGNAL_URL");
+    expect(content).toContain("CodeRelay Signal");
     expect(content).toContain("P2P");
   });
 });

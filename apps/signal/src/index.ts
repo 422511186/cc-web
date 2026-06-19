@@ -52,7 +52,9 @@ interface HostRegistration {
 interface PairingRegistration {
   readonly hostId: string;
   readonly pairingId: string;
+  readonly pairCode?: string;
   readonly expiresAt: string;
+  readonly offer?: unknown;
 }
 
 interface PendingConnectionRequest {
@@ -85,6 +87,7 @@ export class SignalHub {
   private nextSessionIndex = 0;
   private readonly hosts = new Map<string, HostRegistration>();
   private readonly pairings = new Map<string, PairingRegistration>();
+  private readonly pairCodes = new Map<string, string>();
   private readonly pendingPairings = new Map<string, PendingPairingRequest>();
   private readonly pendingConnections = new Map<string, PendingConnectionRequest>();
   private readonly acceptedConnections = new Map<string, AcceptedConnection>();
@@ -118,6 +121,9 @@ export class SignalHub {
         break;
       case "pairing.open":
         this.handlePairingOpen(session, message);
+        break;
+      case "pairing.lookup":
+        this.handlePairingLookup(session, message);
         break;
       case "pairing.request":
         this.handlePairingRequest(session, message);
@@ -157,7 +163,7 @@ export class SignalHub {
         this.hosts.delete(hostId);
         for (const [pairingId, pairing] of this.pairings) {
           if (pairing.hostId === hostId) {
-            this.pairings.delete(pairingId);
+            this.deletePairing(pairingId);
           }
         }
       }
@@ -204,6 +210,7 @@ export class SignalHub {
   private handlePairingOpen(session: SignalSessionImpl, message: SignalInboundMessage): void {
     const hostId = stringField(message, "hostId");
     const pairingId = stringField(message, "pairingId");
+    const pairCode = stringField(message, "pairCode");
     const expiresAt = stringField(message, "expiresAt");
     if (!hostId || !pairingId || !expiresAt) {
       this.sendError(session, stringField(message, "requestId"), "invalid_message");
@@ -215,7 +222,38 @@ export class SignalHub {
       return;
     }
 
-    this.pairings.set(pairingId, { hostId, pairingId, expiresAt });
+    this.pairings.set(pairingId, { hostId, pairingId, pairCode, expiresAt, offer: message.offer });
+    if (pairCode) {
+      this.pairCodes.set(pairCode, pairingId);
+    }
+  }
+
+  private handlePairingLookup(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const pairCode = stringField(message, "pairCode");
+    if (!requestId || !pairCode) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pairingId = this.pairCodes.get(pairCode);
+    const pairing = pairingId ? this.pairings.get(pairingId) : undefined;
+    if (!pairing || !pairing.offer) {
+      this.sendError(session, requestId, "pairing_not_found");
+      return;
+    }
+
+    if (this.now() > Date.parse(pairing.expiresAt)) {
+      this.deletePairing(pairing.pairingId);
+      this.sendError(session, requestId, "pairing_expired");
+      return;
+    }
+
+    session.send({
+      type: "pairing.offer",
+      requestId,
+      offer: pairing.offer,
+    });
   }
 
   private handlePairingRequest(session: SignalSessionImpl, message: SignalInboundMessage): void {
@@ -234,7 +272,7 @@ export class SignalHub {
     }
 
     if (this.now() > Date.parse(pairing.expiresAt)) {
-      this.pairings.delete(pairingId);
+      this.deletePairing(pairingId);
       this.sendError(session, requestId, "pairing_expired");
       return;
     }
@@ -460,6 +498,14 @@ export class SignalHub {
         this.hosts.delete(hostId);
       }
     }
+  }
+
+  private deletePairing(pairingId: string): void {
+    const pairing = this.pairings.get(pairingId);
+    if (pairing?.pairCode) {
+      this.pairCodes.delete(pairing.pairCode);
+    }
+    this.pairings.delete(pairingId);
   }
 
   private sendError(session: SignalSessionImpl, requestId: string | undefined, reason: string): void {

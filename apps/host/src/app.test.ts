@@ -213,6 +213,7 @@ describe("createApp", () => {
         .send({});
       expect(pairingRes.status).toBe(200);
       expect(pairingRes.body.pairingUrl).toBe("http://web.test/?p2p=encoded");
+      expect(pairingRes.body.qrDataUrl).toMatch(/^data:image\/png;base64,/);
       expect(pairingRes.body.offer).toEqual(
         expect.objectContaining({
           protocol: "coderelay-pairing-v1",
@@ -220,9 +221,216 @@ describe("createApp", () => {
           pairingId: "pair-test",
         })
       );
-      expect(p2pRuntime.openPairing).toHaveBeenCalledWith({
-        webUrl: "http://web.test",
+      expect(p2pRuntime.openPairing).toHaveBeenCalledWith({});
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves the Host management page separately from the Web chat UI", async () => {
+    const cfg = baseConfig();
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+
+    try {
+      const res = await request(app).get("/host");
+
+      expect(res.status).toBe(200);
+      expect(res.type).toContain("html");
+      expect(res.text).toContain("CodeRelay Host 管理");
+      expect(res.text).toContain("/api/p2p/pairing");
+      expect(res.text).toContain("设备管理");
+      expect(res.text).toContain("链路拓扑");
+      expect(res.text).toContain("Web 地址");
+      expect(res.text).toContain("Signal 地址");
+      expect(res.text).toContain("/api/host/settings");
+      expect(res.text).not.toContain("Access Token");
+      expect(res.text).not.toContain("coderelay-host-token");
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows the Host management page to use P2P management APIs without a token", async () => {
+    const cfg = baseConfig();
+    const p2pRuntime = {
+      getStatus: vi.fn(() => ({ enabled: true })),
+      openPairing: vi.fn(() => ({
+        offer: {
+          protocol: "coderelay-pairing-v1",
+          webUrl: "http://web.test/",
+          signalUrl: "ws://signal.test/",
+          hostId: "host-test",
+          hostPublicKeyJwk: { kty: "EC", crv: "P-256", x: "host-x", y: "host-y" },
+          hostPublicKeyFingerprint: "host-fingerprint",
+          pairingId: "pair-test",
+          pairingSecret: "secret-test",
+          expiresAt: "2026-06-19T00:05:00.000Z",
+        },
+        pairingUrl: "http://web.test/?p2p=encoded",
+      })),
+      getManagementState: vi.fn(() => ({
+        devices: [],
+        topology: {
+          signalUrl: "ws://signal.test/",
+          hostId: "host-test",
+          signalStatus: "connected",
+          peerStatus: "disconnected",
+          iceLocalAddresses: [],
+        },
+      })),
+      revokeDevice: vi.fn((clientId: string) => ({ ok: true, clientId })),
+    };
+    const app = createApp(cfg, mockStore(), undefined, idleClient, p2pRuntime);
+
+    try {
+      const managementRes = await request(app).get("/api/p2p/management");
+      expect(managementRes.status).toBe(200);
+      expect(managementRes.body.topology.hostId).toBe("host-test");
+
+      const pairingRes = await request(app).post("/api/p2p/pairing").send({});
+      expect(pairingRes.status).toBe(200);
+      expect(pairingRes.body.pairingUrl).toBe("http://web.test/?p2p=encoded");
+      expect(pairingRes.body.qrDataUrl).toMatch(/^data:image\/png;base64,/);
+
+      const revokeRes = await request(app).delete("/api/p2p/devices/phone-a");
+      expect(revokeRes.status).toBe(200);
+      expect(revokeRes.body).toEqual({ ok: true, clientId: "phone-a" });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows the Host management page to read and update public P2P settings without a token", async () => {
+    const cfg = baseConfig();
+    const p2pRuntime = {
+      getStatus: vi.fn(() => ({ enabled: true })),
+      openPairing: vi.fn(),
+      getSettings: vi.fn(() => ({
+        webUrl: "http://old-web.test/",
+        signalUrl: "ws://old-signal.test/",
+      })),
+      updateSettings: vi.fn(() => ({
+        webUrl: "http://new-web.test/",
+        signalUrl: "ws://new-signal.test/",
+      })),
+      getManagementState: vi.fn(() => ({
+        devices: [],
+        topology: {
+          signalUrl: "ws://old-signal.test/",
+          hostId: "host-test",
+          signalStatus: "connected",
+          peerStatus: "disconnected",
+          iceLocalAddresses: [],
+          turnConfigured: false,
+          iceServers: [],
+        },
+      })),
+      revokeDevice: vi.fn((clientId: string) => ({ ok: true, clientId })),
+    };
+    const app = createApp(cfg, mockStore(), undefined, idleClient, p2pRuntime);
+
+    try {
+      const getRes = await request(app).get("/api/host/settings");
+      expect(getRes.status).toBe(200);
+      expect(getRes.body).toEqual({
+        webUrl: "http://old-web.test/",
+        signalUrl: "ws://old-signal.test/",
       });
+
+      const patchRes = await request(app)
+        .patch("/api/host/settings")
+        .send({
+          webUrl: "http://new-web.test/",
+          signalUrl: "ws://new-signal.test/",
+        });
+
+      expect(patchRes.status).toBe(200);
+      expect(patchRes.body).toEqual({
+        webUrl: "http://new-web.test/",
+        signalUrl: "ws://new-signal.test/",
+      });
+      expect(p2pRuntime.updateSettings).toHaveBeenCalledWith({
+        webUrl: "http://new-web.test/",
+        signalUrl: "ws://new-signal.test/",
+      });
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes Host P2P management data and revocation through the authenticated API", async () => {
+    const cfg = baseConfig();
+    const p2pRuntime = {
+      getStatus: vi.fn(() => ({ enabled: true })),
+      openPairing: vi.fn(() => ({
+        offer: {
+          protocol: "coderelay-pairing-v1",
+          webUrl: "http://web.test/",
+          signalUrl: "ws://signal.test/",
+          hostId: "host-test",
+          hostPublicKeyJwk: { kty: "EC", crv: "P-256", x: "host-x", y: "host-y" },
+          hostPublicKeyFingerprint: "host-fingerprint",
+          pairingId: "pair-test",
+          pairingSecret: "secret-test",
+          expiresAt: "2026-06-19T00:05:00.000Z",
+        },
+        pairingUrl: "http://web.test/?p2p=encoded",
+        qrDataUrl: "data:image/png;base64,qr",
+      })),
+      getManagementState: vi.fn(() => ({
+        devices: [
+          {
+            clientId: "phone-a",
+            displayName: "phone-a",
+            addedAt: "2026-06-19T00:00:00.000Z",
+            lastUsedAt: "2026-06-19T00:03:00.000Z",
+            lastTransport: "p2p",
+            revokedAt: undefined,
+          },
+        ],
+        topology: {
+          signalUrl: "ws://signal.test/",
+          hostId: "host-test",
+          signalStatus: "connected",
+          peerStatus: "connected",
+          activeConnection: {
+            clientId: "phone-a",
+            connectionId: "conn-a",
+            transport: "p2p",
+            route: "WebRTC DataChannel -> Host local HTTP bridge",
+          },
+        },
+      })),
+      revokeDevice: vi.fn((clientId: string) => ({ ok: true, clientId })),
+    };
+    const app = createApp(cfg, mockStore(), undefined, idleClient, p2pRuntime);
+
+    try {
+      const managementRes = await request(app)
+        .get("/api/p2p/management")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(managementRes.status).toBe(200);
+      expect(managementRes.body.devices).toEqual([
+        expect.objectContaining({
+          clientId: "phone-a",
+          lastUsedAt: "2026-06-19T00:03:00.000Z",
+          lastTransport: "p2p",
+        }),
+      ]);
+      expect(managementRes.body.topology.activeConnection).toEqual(
+        expect.objectContaining({
+          clientId: "phone-a",
+          connectionId: "conn-a",
+          transport: "p2p",
+        })
+      );
+
+      const revokeRes = await request(app)
+        .delete("/api/p2p/devices/phone-a")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+      expect(revokeRes.status).toBe(200);
+      expect(revokeRes.body).toEqual({ ok: true, clientId: "phone-a" });
+      expect(p2pRuntime.revokeDevice).toHaveBeenCalledWith("phone-a");
     } finally {
       rmSync(cfg.uploadsDir, { recursive: true, force: true });
     }

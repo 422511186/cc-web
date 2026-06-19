@@ -25,12 +25,14 @@ describe("HostP2PRuntime", () => {
     const pairing = runtime.openPairing({});
 
     expect(signal.sent).toContainEqual({ type: "host.online", hostId: "host-test" });
-    expect(signal.sent).toContainEqual({
+    expect(signal.sent).toContainEqual(expect.objectContaining({
       type: "pairing.open",
       hostId: "host-test",
+      pairCode: expect.any(String),
       pairingId: "pair-test",
+      offer: expect.objectContaining({ pairingId: "pair-test" }),
       expiresAt: "2026-06-19T00:02:00.000Z",
-    });
+    }));
     expect(pairing.offer).toEqual(
       expect.objectContaining({
         protocol: "coderelay-pairing-v1",
@@ -43,11 +45,39 @@ describe("HostP2PRuntime", () => {
         expiresAt: "2026-06-19T00:02:00.000Z",
       })
     );
-    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/\?p2p=/);
+    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/pair\/[A-Z0-9]+$/);
+    expect(pairing.pairingUrl).not.toContain("p2p=");
+  });
 
-    const encoded = new URL(pairing.pairingUrl).searchParams.get("p2p");
-    expect(encoded).toBeTruthy();
-    expect(JSON.parse(Buffer.from(encoded!, "base64url").toString("utf8"))).toEqual(pairing.offer);
+  it("opens a pairing with a short /pair code URL instead of embedding the full offer", async () => {
+    const signal = new FakeSignalSocket();
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      createPairingId: () => "pair-test",
+      createPairingSecret: () => "secret-test",
+      createPairingCode: () => "ABCD12",
+      createConnectionId: () => "conn-test",
+      createSignalSocket: () => signal,
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    await runtime.start();
+    const pairing = runtime.openPairing({});
+
+    expect(pairing.pairingUrl).toBe("http://web.test/pair/ABCD12");
+    expect(pairing.pairingUrl).not.toContain("p2p=");
+    expect(pairing.pairCode).toBe("ABCD12");
+    expect(signal.sent).toContainEqual(expect.objectContaining({
+      type: "pairing.open",
+      pairCode: "ABCD12",
+      offer: pairing.offer,
+    }));
   });
 
   it("does not expose an expired pairing offer in status", async () => {
@@ -72,6 +102,47 @@ describe("HostP2PRuntime", () => {
     now = Date.parse("2026-06-19T00:02:01.000Z");
 
     expect(runtime.getStatus().activePairing).toBeUndefined();
+  });
+
+  it("reconnects to Signal after disconnect and republishes the active pairing", async () => {
+    const firstSignal = new FakeSignalSocket();
+    const secondSignal = new FakeSignalSocket();
+    const sockets = [firstSignal, secondSignal];
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      createPairingId: () => "pair-test",
+      createPairingSecret: () => "secret-test",
+      createSignalSocket: () => sockets.shift() ?? new FakeSignalSocket(),
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+      signalReconnectDelayMs: 0,
+    });
+
+    await runtime.start();
+    runtime.openPairing({});
+    firstSignal.close();
+
+    await waitFor(() => secondSignal.sent.some((message) => message.type === "host.online"));
+    expect(secondSignal.sent).toContainEqual({ type: "host.online", hostId: "host-test" });
+    expect(secondSignal.sent).toContainEqual(expect.objectContaining({
+      type: "pairing.open",
+      hostId: "host-test",
+      pairCode: expect.any(String),
+      pairingId: "pair-test",
+      offer: expect.objectContaining({ pairingId: "pair-test" }),
+      expiresAt: "2026-06-19T00:02:00.000Z",
+    }));
+    expect(runtime.getStatus()).toEqual(
+      expect.objectContaining({
+        signalStatus: "connected",
+        activePairing: expect.objectContaining({ pairingId: "pair-test" }),
+      })
+    );
   });
 
   it("accepts a client during an active pairing and bridges the incoming DataChannel", async () => {
@@ -227,6 +298,7 @@ describe("HostP2PRuntime", () => {
       clientId: "client-phone",
       clientPublicKeyJwk: clientIdentity.publicKeyJwk,
       clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+      displayName: "Chrome on Android",
       proof,
     });
     await waitFor(() =>
@@ -245,6 +317,7 @@ describe("HostP2PRuntime", () => {
           expect.objectContaining({
             clientId: "client-phone",
             clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+            displayName: "Chrome on Android",
           }),
         ],
       }),
@@ -265,6 +338,198 @@ describe("HostP2PRuntime", () => {
       requestId: "req-after-pairing",
       connectionId: "conn-test",
       clientId: "client-phone",
+    });
+  });
+
+  it("reports trusted device usage, P2P transport type, and topology for the Host management page", async () => {
+    let now = Date.parse("2026-06-19T00:00:00.000Z");
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const signal = new FakeSignalSocket();
+    const persistedStores: unknown[] = [];
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      trustedDeviceStore: trustClient(createTrustedDeviceStore(), {
+        clientId: clientIdentity.deviceId,
+        clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+        displayName: "Huang Phone",
+        addedAt: "2026-06-19T00:00:00.000Z",
+      }),
+      onTrustedDeviceStoreChanged: (store: unknown) => persistedStores.push(store),
+      now: () => now,
+      createConnectionId: () => "conn-test",
+      createSignalSocket: () => signal,
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    await runtime.start();
+    now = Date.parse("2026-06-19T00:05:00.000Z");
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-client",
+      hostId: "host-test",
+      clientId: clientIdentity.deviceId,
+      clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+      clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+    });
+    await answerConnectionChallenge(signal, "req-client", clientIdentity);
+
+    expect(runtime.getManagementState()).toEqual({
+      devices: [
+        expect.objectContaining({
+          clientId: "client-phone",
+          displayName: "Huang Phone",
+          addedAt: "2026-06-19T00:00:00.000Z",
+          lastUsedAt: "2026-06-19T00:05:00.000Z",
+          lastTransport: "p2p",
+          revokedAt: undefined,
+        }),
+      ],
+      topology: expect.objectContaining({
+        signalUrl: "ws://signal.test/",
+        hostId: "host-test",
+        signalStatus: "connected",
+        peerStatus: "connecting",
+        activeConnection: {
+          clientId: "client-phone",
+          connectionId: "conn-test",
+          transport: "p2p",
+          route: "WebRTC DataChannel -> Host local HTTP bridge",
+        },
+      }),
+    });
+    expect(persistedStores.at(-1)).toEqual(
+      expect.objectContaining({
+        trustedClients: [
+          expect.objectContaining({
+            clientId: "client-phone",
+            lastUsedAt: "2026-06-19T00:05:00.000Z",
+            lastTransport: "p2p",
+          }),
+        ],
+      })
+    );
+
+    expect(await runtime.revokeDevice("client-phone")).toEqual({ ok: true, clientId: "client-phone" });
+    expect(runtime.getManagementState().devices[0]).toEqual(
+      expect.objectContaining({
+        clientId: "client-phone",
+        revokedAt: "2026-06-19T00:05:00.000Z",
+      })
+    );
+  });
+
+  it("reports configured TURN topology without exposing credentials", async () => {
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      iceServers: [{ urls: "turn:relay.example.com:3478", username: "u", credential: "secret" }],
+      iceLocalAddresses: ["172.30.1.2"],
+      createSignalSocket: () => new FakeSignalSocket(),
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    expect(runtime.getManagementState().topology).toEqual(expect.objectContaining({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      iceLocalAddresses: ["172.30.1.2"],
+      turnConfigured: true,
+      iceServers: [{ urls: "turn:relay.example.com:3478", hasUsername: true, hasCredential: true }],
+    }));
+    expect(JSON.stringify(runtime.getManagementState().topology)).not.toContain("secret");
+  });
+
+  it("updates public Web and Signal URLs used by new pairings", async () => {
+    const signal = new FakeSignalSocket();
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://old-signal.test/",
+      hostId: "host-test",
+      webUrl: "http://old-web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      createPairingCode: () => "ABCD12",
+      createPairingId: () => "pair-test",
+      createPairingSecret: () => "secret-test",
+      createSignalSocket: () => signal,
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    runtime.updateSettings({
+      webUrl: "http://new-web.test/app",
+      signalUrl: "ws://new-signal.test/",
+    });
+    const pairing = runtime.openPairing({});
+
+    expect(runtime.getSettings()).toEqual({
+      webUrl: "http://new-web.test/app",
+      signalUrl: "ws://new-signal.test/",
+    });
+    expect(pairing.pairingUrl).toBe("http://new-web.test/app/pair/ABCD12");
+    expect(pairing.offer.webUrl).toBe("http://new-web.test/app");
+    expect(pairing.offer.signalUrl).toBe("ws://new-signal.test/");
+    expect(runtime.getManagementState().topology.signalUrl).toBe("ws://new-signal.test/");
+  });
+
+  it("sends device_revoked before closing an active peer", async () => {
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const signal = new FakeSignalSocket();
+    const peer = new FakePeerConnection();
+    const channel = new FakeDataChannel();
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      trustedDeviceStore: trustClient(createTrustedDeviceStore(), {
+        clientId: clientIdentity.deviceId,
+        clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+        displayName: "Chrome on Android",
+        addedAt: "2026-06-19T00:00:00.000Z",
+      }),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      createConnectionId: () => "conn-test",
+      createSignalSocket: () => signal,
+      createPeerConnection: () => peer,
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    await runtime.start();
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-client",
+      hostId: "host-test",
+      clientId: clientIdentity.deviceId,
+      clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+      clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+    });
+    await answerConnectionChallenge(signal, "req-client", clientIdentity);
+    peer.emitDataChannel(channel);
+    await flushAsync();
+
+    await runtime.revokeDevice("client-phone");
+
+    expect(channel.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "event",
+      event: {
+        type: "device_revoked",
+        message: "此设备授权已被 Host 撤销，请在电脑端重新扫码或获取新的授权链接。",
+      },
     });
   });
 

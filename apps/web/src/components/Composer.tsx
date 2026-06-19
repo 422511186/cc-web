@@ -18,7 +18,6 @@ export function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
 
   async function handleFiles(files: FileList | null, asImage: boolean) {
@@ -91,29 +90,17 @@ export function Composer({
       <div className="composer-row">
         <button
           className="composer-btn"
-          title="附件"
-          onClick={() => fileInput.current?.click()}
-        >
-          📎
-        </button>
-        <button
-          className="composer-btn"
-          title="图片"
+          title="上传图片"
+          aria-label="选择图片"
           onClick={() => imageInput.current?.click()}
         >
           🖼️
         </button>
         <input
-          ref={fileInput}
-          type="file"
-          hidden
-          multiple
-          onChange={(e) => handleFiles(e.target.files, false)}
-        />
-        <input
           ref={imageInput}
           type="file"
           hidden
+          aria-label="上传图片"
           accept="image/*"
           multiple
           onChange={(e) => handleFiles(e.target.files, true)}

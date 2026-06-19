@@ -25,6 +25,8 @@ export interface TrustedClient {
   readonly clientPublicKeyJwk: JsonWebKey;
   readonly displayName?: string;
   readonly addedAt: string;
+  readonly lastUsedAt?: string;
+  readonly lastTransport?: "p2p" | "http";
   readonly revokedAt?: string;
 }
 

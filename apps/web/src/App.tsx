@@ -19,6 +19,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import {
   connectBrowserP2P,
+  connectBrowserP2PFromPairCode,
   connectTrustedBrowserP2P,
   currentPairingOffer,
   loadLastTrustedHostProfile,
@@ -27,6 +28,21 @@ import {
 import type { CodeRelayTransport } from '@coderelay/transport';
 
 const P2P_SESSION_TOKEN = 'p2p-session';
+
+function currentPairCode(): string | null {
+  const match = window.location.pathname.match(/\/pair\/([^/?#]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function configuredSignalUrl(): string {
+  const configured = import.meta.env.VITE_CODERELAY_SIGNAL_URL;
+  if (configured) {
+    return configured;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}`;
+}
 
 function isUnauthorizedError(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && 'status' in error) {
@@ -366,6 +382,7 @@ function App() {
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
   const [maxAgents, setMaxAgents] = useState(3);
   const initialPairingOfferRef = useRef(currentPairingOffer());
+  const initialPairCodeRef = useRef(currentPairCode());
   const initialTrustedHostProfileRef = useRef(loadLastTrustedHostProfile());
   const p2pConnectStartedRef = useRef(false);
   const p2pSessionRef = useRef<BrowserP2PSession | null>(null);
@@ -416,10 +433,24 @@ function App() {
     (window as unknown as { __coderelayTransportMode?: string }).__coderelayTransportMode = 'p2p';
   }, []);
 
+  const handleDeviceRevoked = useCallback((message: string) => {
+    p2pSessionRef.current?.close();
+    p2pSessionRef.current = null;
+    setChatTransport(null);
+    setSessionTransport(null);
+    setDiagnosticsTransport(null);
+    setApiClient(null);
+    setRunId(null);
+    setP2PState({ state: 'failed', error: message });
+    p2pConnectStartedRef.current = true;
+    (window as unknown as { __coderelayTransportMode?: string }).__coderelayTransportMode = 'http';
+  }, []);
+
   const connectP2PWithToken = useCallback(async (token: string) => {
     const offer = initialPairingOfferRef.current ?? currentPairingOffer();
-    const trustedHostProfile = offer ? null : initialTrustedHostProfileRef.current ?? loadLastTrustedHostProfile();
-    if (!offer && !trustedHostProfile) {
+    const pairCode = offer ? null : initialPairCodeRef.current ?? currentPairCode();
+    const trustedHostProfile = offer || pairCode ? null : initialTrustedHostProfileRef.current ?? loadLastTrustedHostProfile();
+    if (!offer && !pairCode && !trustedHostProfile) {
       return false;
     }
 
@@ -427,9 +458,18 @@ function App() {
     try {
       let session: BrowserP2PSession;
       if (offer) {
-        session = await connectBrowserP2P(offer);
+        session = await connectBrowserP2P(offer, {
+          onDeviceRevoked: handleDeviceRevoked,
+        });
+      } else if (pairCode) {
+        session = await connectBrowserP2PFromPairCode(pairCode, {
+          signalUrl: configuredSignalUrl(),
+          onDeviceRevoked: handleDeviceRevoked,
+        });
       } else if (trustedHostProfile) {
-        session = await connectTrustedBrowserP2P(trustedHostProfile);
+        session = await connectTrustedBrowserP2P(trustedHostProfile, {
+          onDeviceRevoked: handleDeviceRevoked,
+        });
       } else {
         return false;
       }
@@ -446,11 +486,13 @@ function App() {
       });
       return false;
     }
-  }, [clearAuthState, installP2PTransport]);
+  }, [clearAuthState, handleDeviceRevoked, installP2PTransport]);
 
   const hasP2PEntry = useCallback(() => Boolean(
     initialPairingOfferRef.current ??
     currentPairingOffer() ??
+    initialPairCodeRef.current ??
+    currentPairCode() ??
     initialTrustedHostProfileRef.current ??
     loadLastTrustedHostProfile()
   ), []);

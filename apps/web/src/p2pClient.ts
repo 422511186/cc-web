@@ -47,10 +47,16 @@ export interface BrowserP2PConnectOptions {
   readonly createClientId?: () => string;
   readonly createRequestId?: () => string;
   readonly loadClientIdentity?: () => Promise<DeviceIdentity>;
+  readonly detectDeviceName?: () => string;
+  readonly onDeviceRevoked?: (message: string) => void;
   readonly timeoutMs?: number;
 }
 
 type SignalMessage = Record<string, unknown> & { readonly type?: string };
+
+export interface BrowserPairCodeConnectOptions extends BrowserP2PConnectOptions {
+  readonly signalUrl: string;
+}
 
 const DATA_CHANNEL_LABEL = "coderelay";
 const CLIENT_ID_STORAGE_KEY = "coderelay-client-id";
@@ -110,14 +116,54 @@ export async function connectBrowserP2P(
   options: BrowserP2PConnectOptions = {},
 ): Promise<BrowserP2PSession> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const socket = await openSignalSocket(offer.signalUrl, options.createWebSocket, timeoutMs);
+  const signal = new BrowserSignalClient(socket);
+
+  return connectBrowserP2PWithSignal(offer, signal, socket, options, timeoutMs);
+}
+
+export async function connectBrowserP2PFromPairCode(
+  pairCode: string,
+  options: BrowserPairCodeConnectOptions,
+): Promise<BrowserP2PSession> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const socket = await openSignalSocket(options.signalUrl, options.createWebSocket, timeoutMs);
+  const signal = new BrowserSignalClient(socket);
+  const requestId = nextRequestId(options, "lookup");
+
+  signal.send({
+    type: "pairing.lookup",
+    requestId,
+    pairCode,
+  });
+
+  const lookupReply = await signal.waitFor(
+    (message) => (message.type === "pairing.offer" && message.requestId === requestId) || isSignalErrorForRequest(message, requestId),
+    timeoutMs,
+    "等待 Signal 返回配对信息超时",
+  );
+  throwIfSignalError(lookupReply);
+  const offer = pairingOfferField(lookupReply, "offer");
+  if (!offer) {
+    throw new Error("Signal pairing offer is invalid");
+  }
+
+  return connectBrowserP2PWithSignal(offer, signal, socket, options, timeoutMs);
+}
+
+async function connectBrowserP2PWithSignal(
+  offer: BrowserPairingOffer,
+  signal: BrowserSignalClient,
+  socket: WebSocket,
+  options: BrowserP2PConnectOptions,
+  timeoutMs: number,
+): Promise<BrowserP2PSession> {
   const offerResult = verifyPairingOffer(offer);
   if (!offerResult.ok) {
     throw new Error(offerResult.reason === "expired" ? "配对链接已过期" : "配对链接无效");
   }
 
   const clientIdentity = await loadClientIdentity(options);
-  const socket = await openSignalSocket(offer.signalUrl, options.createWebSocket, timeoutMs);
-  const signal = new BrowserSignalClient(socket);
   const pairingRequestId = nextRequestId(options, "pair");
   const proof = await createPairingProof(offer, clientIdentity);
 
@@ -129,18 +175,23 @@ export async function connectBrowserP2P(
     clientId: clientIdentity.deviceId,
     clientPublicKeyJwk: clientIdentity.publicKeyJwk,
     clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+    displayName: detectDeviceName(options),
     proof,
   });
 
   const pairingReply = await signal.waitFor(
     (message) =>
-      (message.type === "pairing.accepted" || message.type === "pairing.rejected") &&
-      message.requestId === pairingRequestId &&
-      message.hostId === offer.hostId &&
-      message.clientId === clientIdentity.deviceId,
+      (
+        (message.type === "pairing.accepted" || message.type === "pairing.rejected") &&
+        message.requestId === pairingRequestId &&
+        message.hostId === offer.hostId &&
+        message.clientId === clientIdentity.deviceId
+      ) ||
+      isSignalErrorForRequest(message, pairingRequestId),
     timeoutMs,
     "等待 Host 接受设备配对超时",
   );
+  throwIfSignalError(pairingReply);
   if (pairingReply.type === "pairing.rejected") {
     throw new Error(typeof pairingReply.reason === "string" ? pairingReply.reason : "设备配对被拒绝");
   }
@@ -212,13 +263,17 @@ async function connectTrustedHostOverSignal({
 
   const challengeMessage = await signal.waitFor(
     (message) =>
-      message.type === "connection.challenge" &&
-      message.requestId === connectionRequestId &&
-      message.hostId === hostId &&
-      message.clientId === clientIdentity.deviceId,
+      (
+        message.type === "connection.challenge" &&
+        message.requestId === connectionRequestId &&
+        message.hostId === hostId &&
+        message.clientId === clientIdentity.deviceId
+      ) ||
+      isSignalErrorForRequest(message, connectionRequestId),
     timeoutMs,
     "等待 Host 连接挑战超时",
   );
+  throwIfSignalError(challengeMessage);
   const challenge = challengeField(challengeMessage, "challenge");
   if (!challenge) {
     throw new Error("Signal challenge did not include a valid challenge");
@@ -233,13 +288,17 @@ async function connectTrustedHostOverSignal({
 
   const accepted = await signal.waitFor(
     (message) =>
-      message.type === "connection.accepted" &&
-      message.requestId === connectionRequestId &&
-      message.hostId === hostId &&
-      message.clientId === clientIdentity.deviceId,
+      (
+        message.type === "connection.accepted" &&
+        message.requestId === connectionRequestId &&
+        message.hostId === hostId &&
+        message.clientId === clientIdentity.deviceId
+      ) ||
+      isSignalErrorForRequest(message, connectionRequestId),
     timeoutMs,
     "等待 Host 接受 P2P 连接超时",
   );
+  throwIfSignalError(accepted);
   const connectionId = stringField(accepted, "connectionId");
   if (!connectionId) {
     throw new Error("Signal accepted connection without connectionId");
@@ -297,12 +356,17 @@ async function connectTrustedHostOverSignal({
   }
   await channelOpen;
 
-  const transport = new P2PTransport({ port: dataChannelPort(channel) });
+  const port = dataChannelPort(channel);
+  const removeControlListener = port.addMessageListener((message) => {
+    handleControlFrame(message, hostId, options);
+  });
+  const transport = new P2PTransport({ port });
   return {
     transport,
     connectionId,
     clientId: clientIdentity.deviceId,
     close() {
+      removeControlListener();
       removeCandidateListener();
       channel.close();
       peer.close();
@@ -455,9 +519,76 @@ function parseSignalMessage(data: unknown): SignalMessage | null {
   }
 }
 
+function handleControlFrame(message: string, hostId: string, options: BrowserP2PConnectOptions): void {
+  let frame: unknown;
+  try {
+    frame = JSON.parse(message) as unknown;
+  } catch {
+    return;
+  }
+
+  if (
+    typeof frame !== "object" ||
+    frame === null ||
+    (frame as { type?: unknown }).type !== "event" ||
+    typeof (frame as { event?: unknown }).event !== "object" ||
+    (frame as { event?: { type?: unknown } }).event?.type !== "device_revoked"
+  ) {
+    return;
+  }
+
+  removeTrustedHost(hostId);
+  const event = (frame as { event: { message?: unknown } }).event;
+  options.onDeviceRevoked?.(
+    typeof event.message === "string" ? event.message : "此设备授权已被 Host 撤销，请重新授权"
+  );
+}
+
 function stringField(message: SignalMessage, key: string): string | undefined {
   const value = message[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function pairingOfferField(message: SignalMessage, key: string): BrowserPairingOffer | undefined {
+  const value = message[key];
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { protocol?: unknown }).protocol === "coderelay-pairing-v1" &&
+    typeof (value as { signalUrl?: unknown }).signalUrl === "string" &&
+    typeof (value as { hostId?: unknown }).hostId === "string" &&
+    typeof (value as { hostPublicKeyJwk?: unknown }).hostPublicKeyJwk === "object"
+  ) {
+    return value as BrowserPairingOffer;
+  }
+  return undefined;
+}
+
+function isSignalErrorForRequest(message: SignalMessage, requestId: string): boolean {
+  return message.type === "signal.error" && message.requestId === requestId;
+}
+
+function throwIfSignalError(message: SignalMessage): void {
+  if (message.type !== "signal.error") {
+    return;
+  }
+
+  throw new Error(signalErrorMessage(stringField(message, "reason")));
+}
+
+function signalErrorMessage(reason: string | undefined): string {
+  switch (reason) {
+    case "host_offline":
+      return "Host 当前未连接到 CodeRelay Signal";
+    case "pairing_not_found":
+      return "配对二维码已失效，请在电脑端重新生成";
+    case "pairing_expired":
+      return "配对二维码已过期，请在电脑端重新生成";
+    case "connection_not_found":
+      return "P2P 连接已失效，请重新连接";
+    default:
+      return reason ? `Signal 返回错误：${reason}` : "Signal 返回未知错误";
+  }
 }
 
 function challengeField(message: SignalMessage, key: string): Challenge | undefined {
@@ -545,6 +676,15 @@ function loadTrustedDeviceStore(): TrustedDeviceStore {
   }
 }
 
+function removeTrustedHost(hostId: string): void {
+  const store = loadTrustedDeviceStore();
+  localStorage.setItem(TRUSTED_DEVICE_STORE_KEY, JSON.stringify({
+    ...store,
+    trustedHosts: store.trustedHosts.filter((host) => host.hostId !== hostId),
+  } satisfies TrustedDeviceStore));
+  localStorage.removeItem(LAST_TRUSTED_HOST_PROFILE_KEY);
+}
+
 function nextRequestId(options: BrowserP2PConnectOptions, prefix: string): string {
   return options.createRequestId?.() ?? `${prefix}-${createRandomId()}`;
 }
@@ -557,6 +697,27 @@ function getOrCreateClientId(): string {
   const next = `client-${createRandomId()}`;
   localStorage.setItem(CLIENT_ID_STORAGE_KEY, next);
   return next;
+}
+
+function detectDeviceName(options: BrowserP2PConnectOptions): string {
+  if (options.detectDeviceName) {
+    return options.detectDeviceName();
+  }
+
+  const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
+  const brand = userAgentData?.brands?.find((entry) => !entry.brand.includes("Not"))?.brand;
+  const platform = userAgentData?.platform;
+  if (brand && platform) {
+    return `${brand} on ${platform}`;
+  }
+
+  if (/Android/i.test(navigator.userAgent)) {
+    return "Chrome on Android";
+  }
+  if (/iPhone|iPad/i.test(navigator.userAgent)) {
+    return "Safari on iOS";
+  }
+  return "此设备";
 }
 
 function createRandomId(): string {

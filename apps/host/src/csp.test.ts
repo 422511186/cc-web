@@ -38,6 +38,27 @@ describe('CSP Middleware', () => {
     expect(cspHeader).toMatch(/script-src[^;]*(?!'unsafe-inline')/);
   });
 
+  it('should allow inline script and style only for the built-in Host management page', () => {
+    const middleware = createCspMiddleware();
+    mockReq = { path: '/host' };
+
+    middleware(mockReq as Request, mockRes as Response, mockNext);
+
+    const cspHeader = (mockRes.setHeader as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+    expect(cspHeader).toMatch(/script-src[^;]*'unsafe-inline'/);
+    expect(cspHeader).toMatch(/style-src[^;]*'unsafe-inline'/);
+  });
+
+  it('should not upgrade Host management page API requests to HTTPS', () => {
+    const middleware = createCspMiddleware();
+    mockReq = { path: '/host' };
+
+    middleware(mockReq as Request, mockRes as Response, mockNext);
+
+    const cspHeader = (mockRes.setHeader as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+    expect(cspHeader).not.toContain('upgrade-insecure-requests');
+  });
+
   it('should block eval() by default', () => {
     const middleware = createCspMiddleware();
 

@@ -31,6 +31,15 @@ describe("upload router", () => {
     expect(existsSync(join(dir, res.body.ref))).toBe(true);
   });
 
+  it("keeps the upload endpoint compatible for existing non-image attachment refs", async () => {
+    const res = await request(app())
+      .post("/api/uploads")
+      .attach("file", Buffer.from("hello"), "note.txt");
+
+    expect(res.status).toBe(200);
+    expect(res.body.filename).toBe("note.txt");
+  });
+
   it("rejects a request with no file", async () => {
     const res = await request(app()).post("/api/uploads");
     expect(res.status).toBe(400);

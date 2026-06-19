@@ -382,7 +382,6 @@ export function createChatRouter(
       hub.graceTimer = null;
     }
     const channel = new SseChannel(res);
-    hub.channel = channel;
     recordDebug("server", {
       event: "server.stream-open",
       runId,

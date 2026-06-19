@@ -131,6 +131,45 @@ describe("SignalHub", () => {
     ]);
   });
 
+  it("looks up pairing offers by short pair code and rejects expired codes", () => {
+    const createSignalHub = expectApiFunction("createSignalHub");
+    let now = Date.parse("2026-06-18T10:00:00.000Z");
+    const hub = createSignalHub({ now: () => now });
+    const host = new FakePeer();
+    const client = new FakePeer();
+    const hostSession = hub.connectPeer(host);
+    const clientSession = hub.connectPeer(client);
+    const offer = {
+      version: 1,
+      hostId: "host-1",
+      pairingId: "pair-1",
+      pairingSecret: "secret-1",
+      expiresAt: "2026-06-18T10:02:00.000Z",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      hostPublicKeyJwk: { kty: "EC", crv: "P-256", x: "host-x", y: "host-y" },
+    };
+    hostSession.receive({ type: "host.online", hostId: "host-1" });
+    hostSession.receive({
+      type: "pairing.open",
+      hostId: "host-1",
+      pairingId: "pair-1",
+      pairCode: "ABCD12",
+      expiresAt: "2026-06-18T10:02:00.000Z",
+      offer,
+    });
+
+    clientSession.receive({ type: "pairing.lookup", requestId: "lookup-1", pairCode: "ABCD12" });
+    clientSession.receive({ type: "pairing.lookup", requestId: "lookup-missing", pairCode: "MISSING" });
+    now = Date.parse("2026-06-18T10:03:00.000Z");
+    clientSession.receive({ type: "pairing.lookup", requestId: "lookup-expired", pairCode: "ABCD12" });
+
+    expect(client.sent).toEqual([
+      { type: "pairing.offer", requestId: "lookup-1", offer },
+      { type: "signal.error", requestId: "lookup-missing", reason: "pairing_not_found" },
+      { type: "signal.error", requestId: "lookup-expired", reason: "pairing_expired" },
+    ]);
+  });
+
   it("routes host pairing acceptance back only to the requesting client", () => {
     const createSignalHub = expectApiFunction("createSignalHub");
     const hub = createSignalHub({ now: () => Date.parse("2026-06-18T10:00:00.000Z") });

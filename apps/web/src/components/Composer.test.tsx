@@ -15,6 +15,14 @@ vi.mock("./AttachmentPreview.js", () => ({
 }));
 
 describe("Composer", () => {
+  test("只暴露图片文件选择入口", () => {
+    render(<Composer disabled={false} executing={false} onSend={vi.fn()} />);
+
+    expect(screen.queryByTitle("附件")).not.toBeInTheDocument();
+    const input = screen.getByLabelText("上传图片") as HTMLInputElement;
+    expect(input.accept).toBe("image/*");
+  });
+
   test("点击发送后按钮立即禁用,onSend 调用完成前不可再次点击", async () => {
     let resolveOnSend: (() => void) | undefined;
     const onSendPromise = new Promise<void>((resolve) => {

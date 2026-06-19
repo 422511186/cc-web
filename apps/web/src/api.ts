@@ -16,6 +16,7 @@ interface SSESessionUpdate {
 export interface P2PPairingResponse {
   readonly offer: BrowserPairingOffer;
   readonly pairingUrl: string;
+  readonly qrDataUrl: string;
 }
 
 class ApiClient {
