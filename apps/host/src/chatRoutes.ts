@@ -1,10 +1,12 @@
 import { Router } from "express";
+import { CLAUDE_SESSION_MODES } from "@coderelay/shared";
 import type {
   ServerEvent,
   PromptAnswer,
   SendMessageRequest,
   StartSessionResponse,
   NewSessionRequest,
+  ClaudeSessionMode,
 } from "@coderelay/shared";
 import type { SessionManager } from "./sessionManager.js";
 import { SseChannel } from "./sseChannel.js";
@@ -269,6 +271,27 @@ export function createChatRouter(
       leaseExpiresAt: heartbeat.leaseExpiresAt,
     });
     res.json({ ok: true, ...heartbeat });
+  });
+
+  router.patch("/sessions/:runId/mode", (req, res) => {
+    const runId = req.params.runId;
+    const session = mgr.get(runId);
+    if (!session) {
+      res.status(404).json({ error: "session not found" });
+      return;
+    }
+
+    const body = req.body as { mode?: unknown; deviceName?: unknown };
+    if (typeof body.mode !== "string" || !CLAUDE_SESSION_MODES.includes(body.mode as ClaudeSessionMode)) {
+      res.status(400).json({ error: "invalid mode" });
+      return;
+    }
+    const deviceName = typeof body.deviceName === "string" && body.deviceName.trim()
+      ? body.deviceName.trim()
+      : "此设备";
+    const appliesTo = session.setMode(body.mode as ClaudeSessionMode, deviceName);
+    mgr.touch(runId);
+    res.json({ ok: true, mode: body.mode, appliesTo });
   });
 
   // 发消息

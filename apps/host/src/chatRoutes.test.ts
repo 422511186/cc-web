@@ -320,6 +320,55 @@ describe("chat routes", () => {
     expect(missing.body.error).toBe("session not found");
   });
 
+  it("PATCH /sessions/:runId/mode 修改会话模式并广播 mode_changed", async () => {
+    const a = app();
+    const startRes = await request(a).post("/api/sessions/new").send({});
+    const runId = startRes.body.runId as string;
+
+    const res = await request(a)
+      .patch(`/api/sessions/${runId}/mode`)
+      .send({
+        operationId: "mode-op-1",
+        mode: "plan",
+        clientId: "client-phone",
+        deviceName: "Chrome on Android",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, mode: "plan", appliesTo: "next_turn" });
+
+    const streamRes = await request(a)
+      .get(`/api/sessions/${runId}/stream`)
+      .buffer(true)
+      .parse((stream, cb) => {
+        let data = "";
+        const stop = setTimeout(
+          () => (stream as unknown as { destroy: () => void }).destroy(),
+          500
+        );
+        stream.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+          if (data.includes(`"type":"mode_changed"`)) {
+            clearTimeout(stop);
+            (stream as unknown as { destroy: () => void }).destroy();
+          }
+        });
+        stream.on("close", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+        stream.on("end", () => {
+          clearTimeout(stop);
+          cb(null, data);
+        });
+      });
+    const body = (streamRes.text ?? (streamRes.body as string)) as string;
+
+    expect(body).toContain(`"type":"mode_changed"`);
+    expect(body).toContain(`"mode":"plan"`);
+    expect(body).toContain(`"changedByDeviceName":"Chrome on Android"`);
+  });
+
   it("GET /sessions/active returns active agents and maxConcurrent", async () => {
     const mgr = new SessionManager({
       client: pendingClient,

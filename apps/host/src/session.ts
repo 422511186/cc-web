@@ -3,6 +3,7 @@ import type {
   PromptAnswer,
   PendingPrompt,
   QuestionPrompt,
+  ClaudeSessionMode,
 } from "@coderelay/shared";
 import { randomUUID } from "node:crypto";
 import type {
@@ -47,6 +48,7 @@ export class Session {
   private reportedModel: string | null = null;
   private currentOperationId: string | null = null;
   private queuedOperations: string[] = [];
+  private mode: ClaudeSessionMode = "auto";
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -88,6 +90,17 @@ export class Session {
   /** 提交用户对某待答事项的回答;返回是否命中一个未决项 */
   answer(answer: PromptAnswer): boolean {
     return this.pending.settle(answer.id, answer);
+  }
+
+  setMode(mode: ClaudeSessionMode, changedByDeviceName: string): "next_turn" {
+    this.mode = mode;
+    this.emit({
+      type: "mode_changed",
+      mode: this.mode,
+      changedByDeviceName,
+      appliesTo: "next_turn",
+    });
+    return "next_turn";
   }
 
   /** 停止当前轮次:中止 SDK 当前执行,但保留会话与 SSE 连接,允许后续继续输入。 */
