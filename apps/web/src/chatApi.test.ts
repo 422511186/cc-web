@@ -30,6 +30,7 @@ afterEach(() => {
     setChatTransport?: (transport: CodeRelayTransport | null) => void;
   }).setChatTransport?.(null);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('closeSession', () => {
@@ -116,6 +117,22 @@ describe('active agents', () => {
 
     expect(result.maxConcurrent).toBe(3);
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions/active', expect.objectContaining({
+      method: 'GET',
+      headers: { Authorization: 'Bearer tok' },
+    }));
+  });
+
+  test('配置 Host API 地址时,active agents 直接请求 Host 而不是 e3 /api 代理', async () => {
+    vi.stubEnv('VITE_CODERELAY_API_BASE', 'http://172.30.1.2:3002/api');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ agents: [], maxConcurrent: 3 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listActiveAgents();
+
+    expect(fetchMock).toHaveBeenCalledWith('http://172.30.1.2:3002/api/sessions/active', expect.objectContaining({
       method: 'GET',
       headers: { Authorization: 'Bearer tok' },
     }));

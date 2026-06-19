@@ -1,4 +1,5 @@
 import { HttpTransport, type CodeRelayTransport } from "@coderelay/transport";
+import { getHttpApiBase } from "./apiBase";
 
 export type ClientLogDetail = Record<string, unknown>;
 
@@ -12,7 +13,7 @@ function activeTransport(): CodeRelayTransport {
   return (
     diagnosticsTransport ??
     new HttpTransport({
-      baseUrl: "/api",
+      baseUrl: getHttpApiBase(),
       getAuthToken: () => sessionStorage.getItem("authToken"),
     })
   );

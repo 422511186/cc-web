@@ -6,8 +6,7 @@ import type {
 } from '@coderelay/shared';
 import { HttpTransport, type CodeRelayTransport, type TransportStream } from '@coderelay/transport';
 import type { BrowserPairingOffer } from './p2pClient';
-
-const API_BASE = '/api';
+import { getHttpApiBase } from './apiBase';
 
 interface SSESessionUpdate {
   projectId: string;
@@ -31,7 +30,7 @@ class ApiClient {
     this.transport =
       transport ??
       new HttpTransport({
-        baseUrl: API_BASE,
+        baseUrl: getHttpApiBase(),
         getAuthToken: () => this.token,
         onUnauthorized: this.onUnauthorized,
       });
@@ -86,7 +85,7 @@ class ApiClient {
   /** Build a URL for a cached image file, with the auth token as a query param
    * (since <img src> can't send an Authorization header). */
   imageUrl(filePath: string): string {
-    return `${API_BASE}/image?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(this.token)}`;
+    return `${getHttpApiBase()}/image?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(this.token)}`;
   }
 
   async getImageDataUrl(filePath: string): Promise<string> {

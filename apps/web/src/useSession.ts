@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { ServerEvent, PendingPrompt } from "@coderelay/shared";
 import { HttpTransport, type CodeRelayTransport, type TransportStream } from "@coderelay/transport";
 import { clientLog } from "./diagnostics";
+import { getHttpApiBase } from "./apiBase";
 
 /** 前端侧的一条流式消息 */
 export interface LiveMessage {
@@ -44,7 +45,7 @@ function activeSessionTransport(): CodeRelayTransport {
   return (
     sessionTransport ??
     new HttpTransport({
-      baseUrl: "/api",
+      baseUrl: getHttpApiBase(),
       getAuthToken: () => sessionStorage.getItem("authToken"),
     })
   );

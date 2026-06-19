@@ -5,6 +5,7 @@ import type { SessionStore } from "./store.js";
 import type { SSEManager } from "./sse.js";
 import { createAuthMiddleware } from "./auth.js";
 import { createCspMiddleware } from "./csp.js";
+import { createCorsMiddleware } from "./cors.js";
 import { createRouter } from "./routes.js";
 import { realSdkClient, type SdkClient } from "./sdk.js";
 import { SessionManager } from "./sessionManager.js";
@@ -28,6 +29,7 @@ export function createApp(
 
   // CSP 安全策略（全局，先于鉴权）
   app.use(createCspMiddleware());
+  app.use(createCorsMiddleware(config.allowedOrigins));
 
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true, service: "coderelay-host" });

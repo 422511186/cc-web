@@ -13,6 +13,7 @@ export interface Config {
   orphanIdleTimeoutMs: number;
   maxConcurrent: number;
   uploadsDir: string;
+  allowedOrigins: string[];
   p2p: P2PConfig;
 }
 
@@ -59,6 +60,7 @@ export function loadConfig(): Config {
   const uploadsDir = process.env.UPLOADS_DIR ||
     path.join(process.cwd(), 'uploads');
   const p2p = loadP2PConfig(port);
+  const allowedOrigins = loadAllowedOrigins(p2p);
 
   if (!authToken) {
     throw new Error('AUTH_TOKEN environment variable is required');
@@ -105,6 +107,7 @@ export function loadConfig(): Config {
     orphanIdleTimeoutMs,
     maxConcurrent,
     uploadsDir,
+    allowedOrigins,
     p2p,
   };
 }
@@ -138,4 +141,16 @@ function parseCsv(value: string): string[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function loadAllowedOrigins(p2p: P2PConfig): string[] {
+  const origins = new Set(parseCsv(process.env.CODERELAY_ALLOWED_ORIGINS || process.env.CORS_ALLOWED_ORIGINS || ''));
+  if (p2p.enabled) {
+    try {
+      origins.add(new URL(p2p.webUrl).origin);
+    } catch {
+      // Invalid P2P_WEB_URL is handled by pairing behavior; it just cannot become a CORS origin.
+    }
+  }
+  return [...origins];
 }

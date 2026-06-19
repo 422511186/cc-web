@@ -67,6 +67,35 @@ describe("createApp", () => {
     }
   });
 
+  it("allows configured Web origins to call Host API directly", async () => {
+    const cfg = {
+      ...baseConfig(),
+      allowedOrigins: ["http://172.30.1.102:3100"],
+    };
+    const app = createApp(cfg, mockStore(), undefined, idleClient);
+    try {
+      const preflight = await request(app)
+        .options("/api/projects")
+        .set("Origin", "http://172.30.1.102:3100")
+        .set("Access-Control-Request-Method", "GET")
+        .set("Access-Control-Request-Headers", "authorization");
+
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe("http://172.30.1.102:3100");
+      expect(preflight.headers["access-control-allow-headers"]).toContain("authorization");
+
+      const res = await request(app)
+        .get("/api/projects")
+        .set("Origin", "http://172.30.1.102:3100")
+        .set("Authorization", `Bearer ${cfg.authToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.headers["access-control-allow-origin"]).toBe("http://172.30.1.102:3100");
+    } finally {
+      rmSync(cfg.uploadsDir, { recursive: true, force: true });
+    }
+  });
+
   it("chat routes require auth", async () => {
     const cfg = baseConfig();
     const app = createApp(cfg, mockStore(), undefined, idleClient);

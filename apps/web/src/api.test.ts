@@ -19,6 +19,7 @@ describe('ApiClient.deleteSession', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   test('应以带鉴权头的 DELETE 请求删除指定会话', async () => {
@@ -97,6 +98,22 @@ describe('ApiClient.connectSSE', () => {
     client.disconnect();
 
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test('配置 Host API 地址时,HTTP 模式直接请求 Host 而不是 e3 /api 代理', async () => {
+    vi.stubEnv('VITE_CODERELAY_API_BASE', 'http://172.30.1.2:3002/api');
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ projects: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createApiClient('test-token-123');
+    await client.listProjects();
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://172.30.1.2:3002/api/projects');
+    expect(options.headers.Authorization).toBe('Bearer test-token-123');
   });
 
   test('注入 transport 时通过 transport.subscribe 订阅浏览事件并支持关闭', () => {

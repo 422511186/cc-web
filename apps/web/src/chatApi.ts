@@ -7,6 +7,7 @@ import type {
   UploadResponse,
 } from "@coderelay/shared";
 import { HttpTransport, TransportError, type CodeRelayTransport } from "@coderelay/transport";
+import { getHttpApiBase } from "./apiBase";
 
 let chatTransport: CodeRelayTransport | null = null;
 
@@ -18,7 +19,7 @@ function activeTransport(): CodeRelayTransport {
   return (
     chatTransport ??
     new HttpTransport({
-      baseUrl: "/api",
+      baseUrl: getHttpApiBase(),
       getAuthToken: () => sessionStorage.getItem("authToken"),
     })
   );
