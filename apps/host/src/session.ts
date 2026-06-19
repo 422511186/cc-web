@@ -9,8 +9,9 @@ import { randomUUID } from "node:crypto";
 import type {
   SDKMessage,
   PermissionResult,
+  PermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { SdkClient } from "./sdk.js";
+import type { SdkClient, SdkQuery } from "./sdk.js";
 import { InputQueue } from "./inputQueue.js";
 import { PendingRegistry } from "./pending.js";
 import { buildDiff } from "./diffBuilder.js";
@@ -49,6 +50,7 @@ export class Session {
   private currentOperationId: string | null = null;
   private queuedOperations: string[] = [];
   private mode: ClaudeSessionMode = "auto";
+  private activeQuery: SdkQuery | null = null;
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -59,7 +61,12 @@ export class Session {
   send(text: string, attachments: string[] = []): void {
     const operationId = randomUUID();
     // 回显进事件流:重连整段重放时仍能看到用户自己的提问
-    this.emit({ type: "user_message", text });
+    const imagePaths = attachments.filter(isImagePath);
+    this.emit({
+      type: "user_message",
+      text,
+      ...(imagePaths.length > 0 ? { imagePaths } : {}),
+    });
     if (this.executing || this.pending.hasAny() || this.currentOperationId) {
       this.queuedOperations.push(operationId);
       this.emit({
@@ -92,8 +99,15 @@ export class Session {
     return this.pending.settle(answer.id, answer);
   }
 
-  setMode(mode: ClaudeSessionMode, changedByDeviceName: string): "next_turn" {
+  async setMode(mode: ClaudeSessionMode, changedByDeviceName: string): Promise<"next_turn"> {
+    const previousMode = this.mode;
     this.mode = mode;
+    try {
+      await this.activeQuery?.setPermissionMode?.(mode as PermissionMode);
+    } catch (error) {
+      this.mode = previousMode;
+      throw error;
+    }
     this.emit({
       type: "mode_changed",
       mode: this.mode,
@@ -242,17 +256,22 @@ export class Session {
         const stream = this.opts.client.start({
           prompt: this.input,
           resume: this.resumeId,
-          permissionMode: this.opts.permissionMode,
+          permissionMode: this.mode as PermissionMode,
           cwd: this.opts.cwd,
           canUseTool,
           abortController,
         });
+        this.activeQuery = stream;
 
         for await (const msg of stream) {
           if (this.closed || this.detached) break;
           this.handleSdkMessage(msg);
         }
+        if (this.activeQuery === stream) {
+          this.activeQuery = null;
+        }
       } catch (err) {
+        this.activeQuery = null;
         const isTurnAbort =
           this.abortingCurrentTurn || abortController.signal.aborted;
         if (!this.closed && !this.detached && !isTurnAbort) {
@@ -376,6 +395,10 @@ export class Session {
         break;
     }
   }
+}
+
+function isImagePath(filePath: string): boolean {
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(filePath.split(/[?#]/)[0] ?? "");
 }
 
 /** 把工具入参压成一行可读摘要,给权限卡片显示 */

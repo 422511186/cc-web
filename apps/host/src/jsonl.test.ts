@@ -116,6 +116,17 @@ not valid json
     expect(messages[0].metadata?.imagePaths).toEqual(['/p/1.png', '/p/2.png']);
   });
 
+  it('should extract uploaded image paths from Attached files footer', () => {
+    const jsonl = `{"type":"user","message":{"content":"看看图片\\n\\nAttached files:\\n- C:\\\\Users\\\\huang\\\\workspace\\\\cc-web-p2p\\\\apps\\\\host\\\\uploads\\\\shot.png"},"timestamp":"2026-06-20T04:37:00.000Z"}`;
+    const messages = parseJsonl(jsonl);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('看看图片');
+    expect(messages[0].metadata?.imagePaths).toEqual([
+      'C:\\Users\\huang\\workspace\\cc-web-p2p\\apps\\host\\uploads\\shot.png',
+    ]);
+  });
+
   it('should handle Windows CRLF line endings without leaving \\r residue', () => {
     // CRLF (\r\n) 换行符 - 验证 \r 不会干扰 JSON.parse
     const jsonl = `{"type":"user","message":{"content":"First"},"timestamp":"2026-06-11T17:45:31.574Z"}\r\n{"type":"assistant","message":{"content":[{"type":"text","text":"Second"}]},"timestamp":"2026-06-11T17:45:32.574Z"}`;

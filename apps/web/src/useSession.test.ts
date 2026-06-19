@@ -102,6 +102,23 @@ describe('useSession 服务端回显与重连重建', () => {
     expect(userMsgs[0].blocks).toEqual([{ kind: 'text', text: '你好' }]);
   });
 
+  test('user_message 事件应保留图片路径,供实时聊天气泡显示缩略图', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({
+        type: 'user_message',
+        text: '看看图片',
+        imagePaths: ['C:/uploads/shot.png'],
+      } as ServerEvent);
+    });
+
+    const userMsgs = result.current.messages.filter((m) => m.role === 'user');
+    expect(userMsgs).toHaveLength(1);
+    expect(userMsgs[0].blocks).toEqual([{ kind: 'text', text: '看看图片' }]);
+    expect(userMsgs[0].imagePaths).toEqual(['C:/uploads/shot.png']);
+  });
+
   test('用户消息之后到达的 assistant delta 进入新的 assistant 气泡,不混入 user 消息', () => {
     const { result } = renderHook(() => useSession('run-1'));
 

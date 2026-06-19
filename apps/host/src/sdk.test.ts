@@ -37,6 +37,20 @@ describe("realSdkClient", () => {
     expect(opts.forkSession).toBeUndefined();
   });
 
+  it("bypassPermissions 模式应显式传 allowDangerouslySkipPermissions", () => {
+    realSdkClient.start({ ...baseParams(), permissionMode: "bypassPermissions" });
+    const opts = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(opts.permissionMode).toBe("bypassPermissions");
+    expect(opts.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it("非 bypass 初始模式也应允许后续通过控制通道切换到 bypassPermissions", () => {
+    realSdkClient.start({ ...baseParams(), permissionMode: "auto" });
+    const opts = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(opts.permissionMode).toBe("auto");
+    expect(opts.allowDangerouslySkipPermissions).toBe(true);
+  });
+
   it("canUseTool 回调抛错时应返回 deny,避免异常穿透到 SDK", async () => {
     realSdkClient.start({
       ...baseParams(),

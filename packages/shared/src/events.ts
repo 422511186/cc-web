@@ -64,7 +64,13 @@ export type PromptAnswer = QuestionAnswer | PermissionAnswer | PlanAnswer;
 
 // ── SSE 事件:服务端 → 前端 ──
 
-export const CLAUDE_SESSION_MODES = ["auto", "plan", "bypassPermissions"] as const;
+export const CLAUDE_SESSION_MODES = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "auto",
+  "bypassPermissions",
+] as const;
 export type ClaudeSessionMode = (typeof CLAUDE_SESSION_MODES)[number];
 
 /** 用户消息回显:用户发的提问由服务端回显进事件流,
@@ -72,6 +78,8 @@ export type ClaudeSessionMode = (typeof CLAUDE_SESSION_MODES)[number];
 export interface UserMessageEvent {
   type: "user_message";
   text: string;
+  /** Host 侧可读取的图片文件路径,用于实时流/重连重放显示缩略图。 */
+  imagePaths?: string[];
 }
 
 /** 助手逐字增量(流式) */

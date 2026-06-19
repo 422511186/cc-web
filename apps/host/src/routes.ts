@@ -15,7 +15,12 @@ const IMAGE_CONTENT_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-export function createRouter(store: SessionStore, sseManager?: SSEManager, imageCacheDir?: string): Router {
+export function createRouter(
+  store: SessionStore,
+  sseManager?: SSEManager,
+  imageCacheDir?: string,
+  uploadsDir?: string
+): Router {
   const router = Router();
 
   // GET /api/events - SSE endpoint (auth handled via query param since EventSource doesn't support headers)
@@ -107,9 +112,9 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager, image
   });
 
   // GET /api/image?path=<abs-path> - serve a pasted image from the image cache.
-  // Access is constrained to imageCacheDir to prevent path traversal.
+  // Access is constrained to configured image roots to prevent path traversal.
   router.get('/image', (req, res) => {
-    const image = resolveImageRequest(imageCacheDir, req.query.path);
+    const image = resolveImageRequest([imageCacheDir, uploadsDir], req.query.path);
     if (!image.ok) {
       res.status(image.status).json({ error: image.error });
       return;
@@ -128,7 +133,7 @@ export function createRouter(store: SessionStore, sseManager?: SSEManager, image
 
   // GET /api/image-data?path=<abs-path> - JSON data URL variant for P2PTransport.
   router.get('/image-data', (req, res) => {
-    const image = resolveImageRequest(imageCacheDir, req.query.path);
+    const image = resolveImageRequest([imageCacheDir, uploadsDir], req.query.path);
     if (!image.ok) {
       res.status(image.status).json({ error: image.error });
       return;
@@ -152,8 +157,9 @@ type ResolvedImageRequest =
   | { ok: true; resolved: string; contentType: string }
   | { ok: false; status: number; error: string };
 
-function resolveImageRequest(imageCacheDir: string | undefined, requested: unknown): ResolvedImageRequest {
-  if (!imageCacheDir) {
+function resolveImageRequest(imageRoots: Array<string | undefined>, requested: unknown): ResolvedImageRequest {
+  const roots = imageRoots.filter((root): root is string => Boolean(root));
+  if (roots.length === 0) {
     return { ok: false, status: 404, error: 'Image serving not configured' };
   }
 
@@ -162,9 +168,12 @@ function resolveImageRequest(imageCacheDir: string | undefined, requested: unkno
   }
 
   const resolved = path.resolve(requested);
-  const cacheRoot = path.resolve(imageCacheDir);
-  const rel = path.relative(cacheRoot, resolved);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  const allowed = roots.some((root) => {
+    const resolvedRoot = path.resolve(root);
+    const rel = path.relative(resolvedRoot, resolved);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  });
+  if (!allowed) {
     return { ok: false, status: 403, error: 'Forbidden' };
   }
 

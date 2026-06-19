@@ -141,6 +141,37 @@ describe("P2PTransport", () => {
     await expect((file as File).text()).resolves.toBe("hello over p2p");
   });
 
+  it("chunks oversized response frames so long sessions do not exceed DataChannel message limits", async () => {
+    const P2PTransport = expectApiFunction("P2PTransport");
+    const createP2PBridge = expectApiFunction("createP2PBridge");
+    const link = createMemoryLink({ maxMessageSize: 262_144 });
+    const longContent = "x".repeat(300_000);
+    createP2PBridge(link.host, {
+      handleRequest: async () => ({
+        status: 200,
+        body: {
+          session: {
+            id: "long-session",
+            messages: [{ role: "assistant", content: longContent }],
+          },
+        },
+      }),
+    });
+    const client = new P2PTransport({ port: link.client });
+
+    await expect(client.request<{ session: { messages: Array<{ content: string }> } }>({
+      method: "GET",
+      path: "/sessions/long-session",
+    })).resolves.toEqual({
+      session: {
+        id: "long-session",
+        messages: [{ role: "assistant", content: longContent }],
+      },
+    });
+    expect(link.maxSentLength).toBeLessThanOrEqual(262_144);
+    expect(link.host.sentCount).toBeGreaterThan(1);
+  });
+
   it("rejects the request promise when FormData serialization fails", async () => {
     const P2PTransport = expectApiFunction("P2PTransport");
     const link = createMemoryLink();
@@ -166,16 +197,29 @@ interface MemoryPort {
   addMessageListener(listener: (message: string) => void): () => void;
 }
 
-function createMemoryLink(): { readonly connectionId: string; readonly client: MemoryPort; readonly host: MemoryPort } {
+function createMemoryLink(options: { readonly maxMessageSize?: number } = {}): {
+  readonly connectionId: string;
+  readonly client: MemoryPort;
+  readonly host: MemoryPort;
+  readonly maxSentLength: number;
+} {
   let clientSentCount = 0;
   let hostSentCount = 0;
+  let maxSentLength = 0;
   const clientListeners = new Set<(message: string) => void>();
   const hostListeners = new Set<(message: string) => void>();
+  const recordMessage = (message: string) => {
+    maxSentLength = Math.max(maxSentLength, message.length);
+    if (options.maxMessageSize && message.length > options.maxMessageSize) {
+      throw new Error(`max-message-size exceeded: ${message.length} > ${options.maxMessageSize}`);
+    }
+  };
   const client: MemoryPort = {
     get sentCount() {
       return clientSentCount;
     },
     send(message) {
+      recordMessage(message);
       clientSentCount += 1;
       queueMicrotask(() => {
         for (const listener of hostListeners) listener(message);
@@ -191,6 +235,7 @@ function createMemoryLink(): { readonly connectionId: string; readonly client: M
       return hostSentCount;
     },
     send(message) {
+      recordMessage(message);
       hostSentCount += 1;
       queueMicrotask(() => {
         for (const listener of clientListeners) listener(message);
@@ -202,7 +247,14 @@ function createMemoryLink(): { readonly connectionId: string; readonly client: M
     },
   };
 
-  return { connectionId: "memory-link-1", client, host };
+  return {
+    connectionId: "memory-link-1",
+    client,
+    host,
+    get maxSentLength() {
+      return maxSentLength;
+    },
+  };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {

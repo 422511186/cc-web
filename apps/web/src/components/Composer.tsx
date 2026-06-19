@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from "react";
+import type { ReactNode } from "react";
 import { uploadFile } from "../chatApi.js";
 import { AttachmentPreview, type Attachment } from "./AttachmentPreview.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -8,11 +9,13 @@ export function Composer({
   executing,
   onSend,
   onAbort,
+  modeControl,
 }: {
   disabled: boolean;
   executing?: boolean;
   onSend: (text: string, attachments: string[]) => void | Promise<void>;
   onAbort?: () => void;
+  modeControl?: ReactNode;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -105,6 +108,7 @@ export function Composer({
           multiple
           onChange={(e) => handleFiles(e.target.files, true)}
         />
+        {modeControl}
         <textarea
           className="composer-input"
           value={text}

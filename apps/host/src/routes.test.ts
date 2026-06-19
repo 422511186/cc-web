@@ -206,24 +206,31 @@ describe('API Routes', () => {
 
   describe('GET /api/image', () => {
     let imageDir: string;
+    let uploadDir: string;
     let imageApp: express.Application;
     let pngPath: string;
+    let uploadedPngPath: string;
 
     beforeEach(() => {
       imageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-web-img-'));
+      uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-web-upload-img-'));
       pngPath = path.join(imageDir, 'shot.png');
+      uploadedPngPath = path.join(uploadDir, 'uploaded.png');
       // 1x1 transparent PNG
-      fs.writeFileSync(pngPath, Buffer.from(
+      const pngBytes = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
         'base64',
-      ));
+      );
+      fs.writeFileSync(pngPath, pngBytes);
+      fs.writeFileSync(uploadedPngPath, pngBytes);
 
       imageApp = express();
-      imageApp.use('/api', createRouter(mockStore, sseManager, imageDir));
+      imageApp.use('/api', createRouter(mockStore, sseManager, imageDir, uploadDir));
     });
 
     afterEach(() => {
       fs.rmSync(imageDir, { recursive: true, force: true });
+      fs.rmSync(uploadDir, { recursive: true, force: true });
     });
 
     it('should serve an image within the cache dir', async () => {
@@ -236,6 +243,15 @@ describe('API Routes', () => {
 
     it('should expose an image data URL for transport-backed clients', async () => {
       const res = await request(imageApp).get('/api/image-data').query({ path: pngPath });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        dataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+      });
+    });
+
+    it('should expose uploaded images as data URLs for chat thumbnails', async () => {
+      const res = await request(imageApp).get('/api/image-data').query({ path: uploadedPngPath });
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({

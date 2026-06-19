@@ -160,6 +160,10 @@ export interface P2PTransportOptions {
   readonly port: P2PMessagePort;
 }
 
+const P2P_WIRE_CHUNK_TYPE = "coderelay.wire_chunk.v1";
+const P2P_WIRE_CHUNK_SIZE = 48 * 1024;
+let nextWireMessageIndex = 0;
+
 type P2PClientFrame =
   | {
       readonly type: "request";
@@ -206,6 +210,14 @@ type P2PHostFrame =
       readonly streamId: string;
     };
 
+interface P2PWireChunkFrame {
+  readonly type: typeof P2P_WIRE_CHUNK_TYPE;
+  readonly messageId: string;
+  readonly index: number;
+  readonly total: number;
+  readonly data: string;
+}
+
 interface P2PSerializedFormDataBody {
   readonly __coderelayTransportBody: "form-data-v1";
   readonly fields: readonly P2PSerializedFormDataField[];
@@ -243,9 +255,11 @@ export class P2PTransport implements CodeRelayTransport {
   private nextStreamIndex = 0;
   private readonly pendingRequests = new Map<string, PendingP2PRequest>();
   private readonly streams = new Map<string, ActiveP2PStream>();
+  private readonly port: P2PMessagePort;
 
   constructor(private readonly options: P2PTransportOptions) {
-    this.options.port.addMessageListener((message) => this.handleMessage(message));
+    this.port = createChunkedMessagePort(options.port);
+    this.port.addMessageListener((message) => this.handleMessage(message));
   }
 
   request<TResponse, TBody = unknown>(request: TransportRequest<TBody>): Promise<TResponse> {
@@ -347,7 +361,7 @@ export class P2PTransport implements CodeRelayTransport {
   }
 
   private send(frame: P2PClientFrame): void {
-    this.options.port.send(JSON.stringify(frame));
+    this.port.send(JSON.stringify(frame));
   }
 }
 
@@ -394,9 +408,10 @@ export interface P2PBridge {
 }
 
 export function createP2PBridge(port: P2PMessagePort, handlers: P2PBridgeHandlers): P2PBridge {
+  const chunkedPort = createChunkedMessagePort(port);
   const activeStreams = new Map<string, P2PBridgeStreamHandle>();
-  const removeListener = port.addMessageListener((message) => {
-    void handleBridgeMessage(port, handlers, activeStreams, message);
+  const removeListener = chunkedPort.addMessageListener((message) => {
+    void handleBridgeMessage(chunkedPort, handlers, activeStreams, message);
   });
 
   return {
@@ -515,6 +530,90 @@ async function handleBridgeStreamOpen(
 
 function sendHostFrame(port: P2PMessagePort, frame: P2PHostFrame): void {
   port.send(JSON.stringify(frame));
+}
+
+function createChunkedMessagePort(port: P2PMessagePort): P2PMessagePort {
+  const pendingChunks = new Map<string, { readonly total: number; readonly chunks: string[]; count: number }>();
+
+  return {
+    send(message) {
+      if (message.length <= P2P_WIRE_CHUNK_SIZE) {
+        port.send(message);
+        return;
+      }
+
+      nextWireMessageIndex += 1;
+      const messageId = `chunk-${nextWireMessageIndex}`;
+      const total = Math.ceil(message.length / P2P_WIRE_CHUNK_SIZE);
+      for (let index = 0; index < total; index += 1) {
+        const data = message.slice(index * P2P_WIRE_CHUNK_SIZE, (index + 1) * P2P_WIRE_CHUNK_SIZE);
+        port.send(JSON.stringify({
+          type: P2P_WIRE_CHUNK_TYPE,
+          messageId,
+          index,
+          total,
+          data,
+        } satisfies P2PWireChunkFrame));
+      }
+    },
+    addMessageListener(listener) {
+      return port.addMessageListener((message) => {
+        const chunk = parseWireChunk(message);
+        if (!chunk) {
+          listener(message);
+          return;
+        }
+
+        const entry = pendingChunks.get(chunk.messageId) ?? {
+          total: chunk.total,
+          chunks: new Array<string>(chunk.total),
+          count: 0,
+        };
+        if (chunk.index < 0 || chunk.index >= entry.total || entry.chunks[chunk.index] !== undefined) {
+          return;
+        }
+
+        entry.chunks[chunk.index] = chunk.data;
+        entry.count += 1;
+        pendingChunks.set(chunk.messageId, entry);
+        if (entry.count !== entry.total) {
+          return;
+        }
+
+        pendingChunks.delete(chunk.messageId);
+        listener(entry.chunks.join(""));
+      });
+    },
+  };
+}
+
+function parseWireChunk(message: string): P2PWireChunkFrame | null {
+  try {
+    const frame = JSON.parse(message) as Partial<P2PWireChunkFrame>;
+    const index = frame.index;
+    const total = frame.total;
+    if (
+      frame.type === P2P_WIRE_CHUNK_TYPE &&
+      typeof frame.messageId === "string" &&
+      Number.isInteger(index) &&
+      Number.isInteger(total) &&
+      typeof frame.data === "string" &&
+      typeof index === "number" &&
+      typeof total === "number" &&
+      total > 0
+    ) {
+      return {
+        type: P2P_WIRE_CHUNK_TYPE,
+        messageId: frame.messageId,
+        index,
+        total,
+        data: frame.data,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function readP2PError(body: unknown, status: number): string {

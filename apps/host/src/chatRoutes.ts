@@ -273,7 +273,7 @@ export function createChatRouter(
     res.json({ ok: true, ...heartbeat });
   });
 
-  router.patch("/sessions/:runId/mode", (req, res) => {
+  router.patch("/sessions/:runId/mode", async (req, res) => {
     const runId = req.params.runId;
     const session = mgr.get(runId);
     if (!session) {
@@ -289,9 +289,15 @@ export function createChatRouter(
     const deviceName = typeof body.deviceName === "string" && body.deviceName.trim()
       ? body.deviceName.trim()
       : "此设备";
-    const appliesTo = session.setMode(body.mode as ClaudeSessionMode, deviceName);
-    mgr.touch(runId);
-    res.json({ ok: true, mode: body.mode, appliesTo });
+    try {
+      const appliesTo = await session.setMode(body.mode as ClaudeSessionMode, deviceName);
+      mgr.touch(runId);
+      res.json({ ok: true, mode: body.mode, appliesTo });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "failed to change mode",
+      });
+    }
   });
 
   // 发消息

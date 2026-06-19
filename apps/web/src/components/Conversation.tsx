@@ -445,8 +445,16 @@ function CollapsibleMessage({ message }: { message: Message }) {
   );
 }
 
-function LiveMessageCard({ message }: { message: LiveMessage }) {
-  const hasContent = message.blocks.length > 0 || message.streaming;
+function LiveMessageCard({
+  message,
+  apiClient,
+  onImageClick,
+}: {
+  message: LiveMessage;
+  apiClient: ApiClient;
+  onImageClick: (src: string) => void;
+}) {
+  const hasContent = message.blocks.length > 0 || message.streaming || (message.imagePaths?.length ?? 0) > 0;
   if (!hasContent) return null;
 
   if (message.role === 'user') {
@@ -467,6 +475,19 @@ function LiveMessageCard({ message }: { message: LiveMessage }) {
             whiteSpace: 'pre-wrap',
           }}
         >
+          {message.imagePaths && message.imagePaths.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: text ? '0.75rem' : 0 }}>
+              {message.imagePaths.map((p, idx) => (
+                <RemoteImageThumbnail
+                  key={`live-path-${idx}`}
+                  apiClient={apiClient}
+                  filePath={p}
+                  alt={`Image ${idx + 1}`}
+                  onImageClick={(src) => onImageClick(src)}
+                />
+              ))}
+            </div>
+          )}
           {text}
         </div>
       </div>
@@ -629,7 +650,11 @@ function ConversationListRow({
     return (
       <div style={style}>
         <div style={{ maxWidth: '1200px', margin: '0 auto 1rem' }}>
-          <LiveMessageCard message={row.liveMessage} />
+          <LiveMessageCard
+            message={row.liveMessage}
+            apiClient={apiClient}
+            onImageClick={onImageClick}
+          />
         </div>
       </div>
     );

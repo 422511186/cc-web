@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Session } from "./session.js";
 import type { SdkClient, StartQueryParams } from "./sdk.js";
 import type { ServerEvent } from "@coderelay/shared";
@@ -118,6 +118,27 @@ describe("Session", () => {
     const session = new Session({ client, permissionMode: "default", onEvent });
     session.send("你好");
     expect(events).toContainEqual({ type: "user_message", text: "你好" });
+    session.detach();
+  });
+
+  it("send 回显用户消息时应带上图片附件路径,供聊天记录显示缩略图", async () => {
+    const client = fakeClient(async function* (params) {
+      for await (const _msg of params.prompt) break;
+    });
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+
+    session.send("看看图片", [
+      "C:/uploads/shot.png",
+      "C:/uploads/readme.txt",
+      "C:/uploads/photo.webp",
+    ]);
+
+    expect(events).toContainEqual({
+      type: "user_message",
+      text: "看看图片",
+      imagePaths: ["C:/uploads/shot.png", "C:/uploads/photo.webp"],
+    });
     session.detach();
   });
 
@@ -644,5 +665,46 @@ describe("Session", () => {
     expect(starts).toHaveLength(2);
     expect(starts[0].resume).toBeUndefined();
     expect(starts[1].resume).toBe("sdk-session-1");
+  });
+
+  it("切换模式时应同步调用 SDK setPermissionMode,让下一轮真正进入 plan 模式", async () => {
+    const setPermissionMode = vi.fn(async () => {});
+    const client: SdkClient = {
+      start(params) {
+        const stream = (async function* () {
+          for await (const _msg of params.prompt) {
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              result: "ok",
+              session_id: "s1",
+              uuid: "r1",
+            } as unknown as SDKMessage;
+          }
+        })();
+        return Object.assign(stream, { setPermissionMode });
+      },
+    };
+
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+    const done = session.runToCompletion();
+    session.send("first");
+
+    await waitFor(() => events.some((event) => event.type === "turn_end"));
+    const appliesTo = await Promise.resolve(session.setMode("plan", "此设备"));
+    expect(appliesTo).toBe("next_turn");
+
+    expect(setPermissionMode).toHaveBeenCalledWith("plan");
+    expect(events).toContainEqual({
+      type: "mode_changed",
+      mode: "plan",
+      changedByDeviceName: "此设备",
+      appliesTo: "next_turn",
+    });
+
+    session.detach();
+    await done;
   });
 });

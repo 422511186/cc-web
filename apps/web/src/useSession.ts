@@ -14,6 +14,7 @@ export interface LiveMessage {
     | { kind: "tool_use"; name: string; input: unknown; toolUseId: string }
     | { kind: "tool_result"; toolUseId: string; text: string; isError: boolean }
   )[];
+  imagePaths?: string[];
   /** 正在流式累积、尚未落定的文本 */
   streaming: string;
 }
@@ -92,7 +93,14 @@ export function useSession(runId: string | null): SessionState {
       case "user_message":
         setMessages((prev) => [
           ...prev,
-          { role: "user", blocks: [{ kind: "text", text: event.text }], streaming: "" },
+          {
+            role: "user",
+            blocks: [{ kind: "text", text: event.text }],
+            ...(event.imagePaths && event.imagePaths.length > 0
+              ? { imagePaths: event.imagePaths }
+              : {}),
+            streaming: "",
+          },
         ]);
         break;
       case "delta":

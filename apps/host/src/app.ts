@@ -45,11 +45,12 @@ export function createApp(
   // 鉴权前置于所有 /api 路由
   app.use("/api", createAuthMiddleware(config.authToken));
 
-  // 浏览路由(projects / sessions / search / image / events)
-  app.use("/api", createRouter(store, sseManager, config.imageCacheDir));
-
   // 续聊 + 上传
   mkdirSync(config.uploadsDir, { recursive: true });
+
+  // 浏览路由(projects / sessions / search / image / events)
+  app.use("/api", createRouter(store, sseManager, config.imageCacheDir, config.uploadsDir));
+
   const manager = new SessionManager({
     client: sdkClient,
     permissionMode: config.permissionMode,

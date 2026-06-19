@@ -209,12 +209,36 @@ function parseTimestamp(ts: string | number | undefined): number {
  * the markers from the visible text so the UI can render them as attachments.
  */
 const IMAGE_MARKER_RE = /\[Image:\s*source:\s*([^\]]+?)\]/g;
+const ATTACHED_FILES_RE = /(?:^|\n)Attached files:\n((?:\s*-\s+.+(?:\n|$))+)/g;
 
 function extractImagePaths(text: string): { content: string; imagePaths: string[] } {
   const imagePaths: string[] = [];
-  const content = text.replace(IMAGE_MARKER_RE, (_match, p1: string) => {
-    imagePaths.push(p1.trim());
-    return '';
-  }).replace(/\n{3,}/g, '\n\n').trim();
+  const content = text
+    .replace(IMAGE_MARKER_RE, (_match, p1: string) => {
+      imagePaths.push(p1.trim());
+      return '';
+    })
+    .replace(ATTACHED_FILES_RE, (_match, list: string) => {
+      const remaining: string[] = [];
+      for (const line of list.split(/\r?\n/)) {
+        const match = line.match(/^\s*-\s+(.+?)\s*$/);
+        if (!match) continue;
+        const filePath = match[1].trim();
+        if (isImagePath(filePath)) {
+          imagePaths.push(filePath);
+        } else {
+          remaining.push(`- ${filePath}`);
+        }
+      }
+
+      if (remaining.length === 0) return '\n';
+      return `\nAttached files:\n${remaining.join('\n')}\n`;
+    })
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return { content, imagePaths };
+}
+
+function isImagePath(filePath: string): boolean {
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(filePath.split(/[?#]/)[0] ?? '');
 }

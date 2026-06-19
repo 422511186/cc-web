@@ -417,7 +417,7 @@ useEffect(() => {
 
 ### 类型安全
 
-5. **sdk.ts:42** - `permissionMode` 强转 `as never` 不安全，应在 config 阶段校验枚举
+5. ~~**sdk.ts:42** - `permissionMode` 强转 `as never` 不安全，应在 config 阶段校验枚举~~ ✅ 已修复（2026-06-20：`SdkClient` 改用 SDK `PermissionMode` 类型，并扩展会话级模式校验）
 6. **inputQueue.ts:34** - `value: undefined as never` 语义不明，应用显式类型断言
 7. ~~**auth.ts:12-15** - 支持 plain token（不带 `Bearer`）降低安全性，应严格要求前缀~~ ✅ 已修复（2026-06-17：仅接受标准 `Authorization: Bearer ...` 头）
 

@@ -25,14 +25,19 @@ describe('shared events contracts', () => {
 
   it('ServerEvent 覆盖运行时状态与关闭原因契约', () => {
     const events: ServerEvent[] = [
+      { type: 'user_message', text: '看看图片', imagePaths: ['C:/uploads/shot.png'] },
       { type: 'status', state: 'executing' },
       { type: 'run_info', model: 'claude-opus-4-8' },
       { type: 'closed', reason: 'detached' },
     ];
 
-    expect(events[0]).toMatchObject({ type: 'status', state: 'executing' });
-    expect(events[1]).toMatchObject({ type: 'run_info', model: 'claude-opus-4-8' });
-    expect(events[2]).toMatchObject({ type: 'closed', reason: 'detached' });
+    expect(events[0]).toMatchObject({
+      type: 'user_message',
+      imagePaths: ['C:/uploads/shot.png'],
+    });
+    expect(events[1]).toMatchObject({ type: 'status', state: 'executing' });
+    expect(events[2]).toMatchObject({ type: 'run_info', model: 'claude-opus-4-8' });
+    expect(events[3]).toMatchObject({ type: 'closed', reason: 'detached' });
   });
 
   it('ServerEvent 覆盖发布订阅、队列、模式和撤销契约', () => {
@@ -89,8 +94,10 @@ describe('shared events contracts', () => {
 
   it('运行时导出 Claude 会话模式列表，供前后端共享校验', () => {
     expect(shared.CLAUDE_SESSION_MODES).toEqual([
-      'auto',
+      'default',
+      'acceptEdits',
       'plan',
+      'auto',
       'bypassPermissions',
     ]);
   });

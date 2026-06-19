@@ -134,7 +134,7 @@ let sessionState: {
   effort: string | null;
   closed: boolean;
   closedReason: string | null;
-  mode: 'auto' | 'plan' | 'bypassPermissions';
+  mode: 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
   lastPromptResolution: null;
 };
 beforeEach(() => {
@@ -441,6 +441,8 @@ describe('App P2P 配对与传输切换', () => {
       })
     );
     expect(p2pClient.connectBrowserP2P).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe('/');
+    expect(window.location.search).toBe('');
     vi.unstubAllEnvs();
   });
 
@@ -792,11 +794,22 @@ describe('App 执行状态与模型展示', () => {
     expect(screen.getByText(/强度:\s*high/)).toBeInTheDocument();
   });
 
-  test('点击 Plan 模式按钮会切换当前会话模式', async () => {
+  test('模式控制使用 Claude Code 风格菜单并可切换 Plan mode', async () => {
     const chatApi = await import('./chatApi');
     await enterActiveSession();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Plan' }));
+    expect(screen.queryByRole('group', { name: 'Claude 模式' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Auto mode/ }));
+
+    const menu = await screen.findByRole('menu', { name: 'Modes' });
+    expect(within(menu).getByRole('menuitemradio', { name: /Ask before edits/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitemradio', { name: /Edit automatically/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitemradio', { name: /Plan mode/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitemradio', { name: /Auto mode/ })).toHaveAttribute('aria-checked', 'true');
+    expect(within(menu).getByRole('menuitemradio', { name: /Bypass permissions/ })).toBeInTheDocument();
+
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Plan mode/ }));
 
     await waitFor(() => expect(chatApi.changeMode).toHaveBeenCalledWith(
       'sA',

@@ -5,11 +5,12 @@ import { Conversation } from './components/Conversation';
 import { MobileMenu } from './components/MobileMenu';
 import { Composer } from './components/Composer';
 import { AlertDialog } from './components/AlertDialog';
+import { ModeMenu } from './components/ModeMenu';
 import { useSession, setSessionTransport } from './useSession';
 import { startNew, startContinue, sendMessage, respond, changeMode, closeSession, abortSession, probeRun, listActiveAgents, closeAgent, heartbeatSession, setChatTransport } from './chatApi';
 import { createApiClient } from './api';
 import type { ApiClient } from './api';
-import type { ActiveAgent, PromptAnswer, PendingPrompt, Project } from '@coderelay/shared';
+import type { ActiveAgent, ClaudeSessionMode, PromptAnswer, PendingPrompt, Project } from '@coderelay/shared';
 import type { LiveMessage } from './useSession';
 import { clientLog, setDiagnosticsTransport } from './diagnostics';
 import { QuestionCard } from './components/QuestionCard';
@@ -32,6 +33,13 @@ const P2P_SESSION_TOKEN = 'p2p-session';
 function currentPairCode(): string | null {
   const match = window.location.pathname.match(/\/pair\/([^/?#]+)/);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function replacePairingEntryUrl(): void {
+  const params = new URLSearchParams(window.location.search);
+  params.delete('p2p');
+  const query = params.toString();
+  window.history.replaceState({}, '', `/${query ? `?${query}` : ''}`);
 }
 
 function configuredSignalUrl(): string {
@@ -450,6 +458,7 @@ function App() {
     const offer = initialPairingOfferRef.current ?? currentPairingOffer();
     const pairCode = offer ? null : initialPairCodeRef.current ?? currentPairCode();
     const trustedHostProfile = offer || pairCode ? null : initialTrustedHostProfileRef.current ?? loadLastTrustedHostProfile();
+    const hadPairingEntry = Boolean(offer || pairCode);
     if (!offer && !pairCode && !trustedHostProfile) {
       return false;
     }
@@ -478,6 +487,11 @@ function App() {
       const client = createApiClient(token, () => clearAuthState(client), session.transport);
       setApiClient(client);
       setP2PState({ state: 'connected' });
+      if (hadPairingEntry) {
+        initialPairingOfferRef.current = null;
+        initialPairCodeRef.current = null;
+        replacePairingEntryUrl();
+      }
       return true;
     } catch (error) {
       setP2PState({
@@ -923,7 +937,7 @@ function App() {
     [runId]
   );
 
-  const handleModeChange = useCallback(async (nextMode: 'auto' | 'plan' | 'bypassPermissions') => {
+  const handleModeChange = useCallback(async (nextMode: ClaudeSessionMode) => {
     if (!runId || nextMode === mode) return;
     try {
       await changeMode(runId, {
@@ -1198,43 +1212,6 @@ function App() {
                   模型: {model ?? '未知'}
                 </span>
               )}
-              {runId && (
-                <div
-                  role="group"
-                  aria-label="Claude 模式"
-                  style={{
-                    display: 'inline-flex',
-                    border: '1px solid #d0d7de',
-                    borderRadius: 6,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {([
-                    ['auto', 'Auto'],
-                    ['plan', 'Plan'],
-                    ['bypassPermissions', 'Bypass'],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => void handleModeChange(value)}
-                      aria-pressed={mode === value}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        border: 0,
-                        borderRight: value === 'bypassPermissions' ? 0 : '1px solid #d0d7de',
-                        background: mode === value ? '#0969da' : '#fff',
-                        color: mode === value ? '#fff' : '#57606a',
-                        cursor: mode === value ? 'default' : 'pointer',
-                        fontSize: '0.78rem',
-                        fontWeight: 650,
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
               {runId && effort && (
                 <span style={{ color: '#888' }}>
                   强度: {effort}
@@ -1296,6 +1273,13 @@ function App() {
                 executing={status === 'executing'}
                 onSend={handleSend}
                 onAbort={handleAbort}
+                modeControl={
+                  <ModeMenu
+                    mode={mode}
+                    disabled={!connected}
+                    onModeChange={handleModeChange}
+                  />
+                }
               />
             )}
           </>

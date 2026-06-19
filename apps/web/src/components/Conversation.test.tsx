@@ -162,6 +162,33 @@ describe('Conversation 历史/实时边界去重', () => {
       expect(screen.getAllByText('本轮已落盘回答')).toHaveLength(1);
     });
   });
+
+  test('实时用户消息带 imagePaths 时应渲染图片缩略图', async () => {
+    const getSession = vi.fn().mockResolvedValue(makeSession([]));
+    const getImageDataUrl = vi.fn().mockResolvedValue('data:image/png;base64,live123');
+    const apiClient = makeApiClient(getSession, { getImageDataUrl } as Partial<ApiClient>);
+
+    render(
+      <Conversation
+        apiClient={apiClient}
+        projectId="p1"
+        sessionId="s1"
+        liveMessages={[
+          {
+            role: 'user',
+            blocks: [{ kind: 'text', text: '看看图片' }],
+            streaming: '',
+            imagePaths: ['C:/uploads/shot.png'],
+          } as any,
+        ]}
+      />
+    );
+
+    const image = await screen.findByAltText('Image 1');
+    expect(image).toHaveAttribute('src', 'data:image/png;base64,live123');
+    expect(getImageDataUrl).toHaveBeenCalledWith('C:/uploads/shot.png');
+    expect(screen.getByText('看看图片')).toBeInTheDocument();
+  });
 });
 
 describe('Conversation 编辑工具显示行级 diff', () => {
