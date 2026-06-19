@@ -1,3 +1,6 @@
+import { p256 } from "@noble/curves/p256.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+
 export interface DeviceIdentity {
   readonly deviceId: string;
   readonly publicKeyJwk: JsonWebKey;
@@ -84,22 +87,18 @@ export interface ChallengeProof {
   readonly signature: string;
 }
 
-const KEY_ALGORITHM: EcKeyGenParams = {
-  name: "ECDSA",
-  namedCurve: "P-256",
-};
-
-const SIGN_ALGORITHM: EcdsaParams = {
-  name: "ECDSA",
-  hash: "SHA-256",
-};
-
 const DEFAULT_PAIRING_TTL_MS = 2 * 60 * 1000;
+const P256_COORDINATE_BYTES = 32;
 
 export async function createDeviceIdentity(options: CreateDeviceIdentityOptions = {}): Promise<DeviceIdentity> {
-  const keyPair = (await crypto.subtle.generateKey(KEY_ALGORITHM, true, ["sign", "verify"])) as CryptoKeyPair;
-  const publicKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-  const privateKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
+  const privateKeyBytes = p256.utils.randomSecretKey();
+  const publicKeyBytes = p256.getPublicKey(privateKeyBytes, false);
+  const publicKeyJwk = publicJwkFromBytes(publicKeyBytes);
+  const privateKeyJwk = {
+    ...publicKeyJwk,
+    d: bytesToBase64Url(privateKeyBytes),
+    key_ops: ["sign"],
+  };
 
   return {
     deviceId: options.deviceId ?? createId("device"),
@@ -340,8 +339,7 @@ export async function authorizeClientChallenge(
 }
 
 async function fingerprintPublicKey(publicKeyJwk: JsonWebKey): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", encodeText(stableStringify(publicKeyJwk)));
-  return bytesToBase64Url(new Uint8Array(digest));
+  return bytesToBase64Url(sha256(encodeText(stableStringify(publicKeyJwk))));
 }
 
 function pairingProofPayload(
@@ -368,23 +366,73 @@ function challengePayload(challenge: Challenge): unknown {
 }
 
 async function signPayload(privateKeyJwk: JsonWebKey, payload: unknown): Promise<string> {
-  const privateKey = await crypto.subtle.importKey("jwk", privateKeyJwk, KEY_ALGORITHM, false, ["sign"]);
-  const signature = await crypto.subtle.sign(SIGN_ALGORITHM, privateKey, encodeText(stableStringify(payload)));
-  return bytesToBase64Url(new Uint8Array(signature));
+  const privateKeyBytes = jwkPrivateKeyBytes(privateKeyJwk);
+  const signature = p256.sign(encodeText(stableStringify(payload)), privateKeyBytes, {
+    prehash: true,
+    format: "compact",
+  });
+  return bytesToBase64Url(signature.toBytes("compact"));
 }
 
 async function verifyPayloadSignature(publicKeyJwk: JsonWebKey, payload: unknown, signature: string): Promise<boolean> {
   try {
-    const publicKey = await crypto.subtle.importKey("jwk", publicKeyJwk, KEY_ALGORITHM, false, ["verify"]);
-    return crypto.subtle.verify(
-      SIGN_ALGORITHM,
-      publicKey,
-      toArrayBuffer(base64UrlToBytes(signature)),
-      encodeText(stableStringify(payload)),
-    );
+    return p256.verify(base64UrlToBytes(signature), encodeText(stableStringify(payload)), jwkPublicKeyBytes(publicKeyJwk), {
+      prehash: true,
+      format: "compact",
+    });
   } catch {
     return false;
   }
+}
+
+function publicJwkFromBytes(publicKeyBytes: Uint8Array): JsonWebKey {
+  if (publicKeyBytes.length !== 1 + P256_COORDINATE_BYTES * 2 || publicKeyBytes[0] !== 4) {
+    throw new Error("Invalid P-256 public key");
+  }
+
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: bytesToBase64Url(publicKeyBytes.slice(1, 1 + P256_COORDINATE_BYTES)),
+    y: bytesToBase64Url(publicKeyBytes.slice(1 + P256_COORDINATE_BYTES)),
+    ext: true,
+    key_ops: ["verify"],
+  };
+}
+
+function jwkPrivateKeyBytes(privateKeyJwk: JsonWebKey): Uint8Array {
+  const privateKey = privateKeyJwk.d;
+  if (privateKeyJwk.kty !== "EC" || privateKeyJwk.crv !== "P-256" || typeof privateKey !== "string") {
+    throw new Error("Invalid P-256 private JWK");
+  }
+
+  const bytes = base64UrlToBytes(privateKey);
+  if (bytes.length !== P256_COORDINATE_BYTES || !p256.utils.isValidSecretKey(bytes)) {
+    throw new Error("Invalid P-256 private key");
+  }
+
+  return bytes;
+}
+
+function jwkPublicKeyBytes(publicKeyJwk: JsonWebKey): Uint8Array {
+  const x = publicKeyJwk.x;
+  const y = publicKeyJwk.y;
+  if (publicKeyJwk.kty !== "EC" || publicKeyJwk.crv !== "P-256" || typeof x !== "string" || typeof y !== "string") {
+    throw new Error("Invalid P-256 public JWK");
+  }
+
+  const xBytes = base64UrlToBytes(x);
+  const yBytes = base64UrlToBytes(y);
+  if (xBytes.length !== P256_COORDINATE_BYTES || yBytes.length !== P256_COORDINATE_BYTES) {
+    throw new Error("Invalid P-256 public key coordinates");
+  }
+
+  const publicKey = new Uint8Array(1 + P256_COORDINATE_BYTES * 2);
+  publicKey[0] = 4;
+  publicKey.set(xBytes, 1);
+  publicKey.set(yBytes, 1 + P256_COORDINATE_BYTES);
+  p256.Point.fromBytes(publicKey);
+  return publicKey;
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
@@ -408,14 +456,8 @@ function stableStringify(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
-function encodeText(value: string): ArrayBuffer {
-  return toArrayBuffer(new TextEncoder().encode(value));
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
+function encodeText(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
 }
 
 function createId(prefix: string): string {

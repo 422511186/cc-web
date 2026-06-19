@@ -9,6 +9,54 @@ function expectApiFunction<T extends (...args: any[]) => any>(name: string): T {
 }
 
 describe("device identity", () => {
+  it("creates identities and verifies signatures when WebCrypto subtle is unavailable", async () => {
+    const originalSubtle = crypto.subtle;
+    Object.defineProperty(crypto, "subtle", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      const createDeviceIdentity = expectApiFunction("createDeviceIdentity");
+      const createPairingOffer = expectApiFunction("createPairingOffer");
+      const createPairingProof = expectApiFunction("createPairingProof");
+      const acceptPairingProof = expectApiFunction("acceptPairingProof");
+      const createTrustedDeviceStore = expectApiFunction("createTrustedDeviceStore");
+      const host = await createDeviceIdentity({ deviceId: "host-http" });
+      const phone = await createDeviceIdentity({ deviceId: "phone-http" });
+      const offer = createPairingOffer({
+        webUrl: "http://172.30.1.102:3100",
+        signalUrl: "ws://172.30.1.102:8787/",
+        host,
+        pairingId: "pair-http",
+        pairingSecret: "secret-http",
+        now: Date.parse("2026-06-19T10:00:00.000Z"),
+      });
+      const proof = await createPairingProof(offer, phone);
+
+      await expect(
+        acceptPairingProof(createTrustedDeviceStore(), offer, proof, {
+          now: Date.parse("2026-06-19T10:00:01.000Z"),
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        store: expect.objectContaining({
+          trustedClients: [
+            expect.objectContaining({
+              clientId: "phone-http",
+              clientPublicKeyJwk: phone.publicKeyJwk,
+            }),
+          ],
+        }),
+      });
+    } finally {
+      Object.defineProperty(crypto, "subtle", {
+        configurable: true,
+        value: originalSubtle,
+      });
+    }
+  });
+
   it("creates a long-lived identity and can expose it without private key material", async () => {
     const createDeviceIdentity = expectApiFunction("createDeviceIdentity");
     const toPublicDeviceDescriptor = expectApiFunction("toPublicDeviceDescriptor");
