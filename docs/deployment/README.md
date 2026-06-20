@@ -60,6 +60,38 @@ npm run start --workspace @coderelay/host
 npm run start --workspace @coderelay/signal
 ```
 
+## 环境变量：构建时注入，还是运行时读取？
+
+这是部署 CodeRelay 时**最容易混淆**的一点。先记一句话总结：
+
+- **Web 前端（`VITE_*`）= 构建时变量**。在 `npm run build` 时被写死进 `apps/web/dist` 的 JS 文件里。部署后改服务器上的环境变量**不会生效**，必须重新构建并重新部署 Web。
+- **Host / Signal 后端 = 运行时变量**。所有环境变量都在进程启动时读取。改完只需**重启进程**即可生效，不需要重新 `npm run build`（build 只是为了更新代码本身）。
+- **Web 开发服务器（`CODERELAY_DEV_API_TARGET`）= 开发服务器启动时变量**。只影响 `npm run dev:web` 的本地代理，不进生产产物。
+
+完整对照表：
+
+| 变量 | 属于 | 注入时机 | 改了之后如何生效 |
+| --- | --- | --- | --- |
+| `VITE_CODERELAY_SIGNAL_URL` | Web | 构建时 | 重新 `npm run build` + 重新部署 Web |
+| `VITE_CODERELAY_API_BASE` | Web | 构建时 | 重新 `npm run build` + 重新部署 Web |
+| `CODERELAY_DEV_API_TARGET` | Web 开发服务器 | `npm run dev:web` 启动时 | 重启 dev server（不影响生产产物） |
+| `AUTH_TOKEN` / `PORT` / `CLAUDE_PROJECTS_DIR` / `PERMISSION_MODE` 等全部 Host 变量 | Host | 进程启动时 | 重启 Host 进程 |
+| `P2P_SIGNAL_URL` / `P2P_WEB_URL` / `P2P_HOST_ID` 等全部 P2P 变量 | Host | 进程启动时 | 重启 Host 进程 |
+| `PORT`（Signal） | Signal | 进程启动时 | 重启 Signal 进程 |
+
+判断方法：**带 `VITE_` 前缀的就是 Web 构建时变量，其余 Host / Signal 变量都是后端运行时变量。**
+
+### “指向哪个 Signal” 要配两次
+
+P2P 模式里，Host 和 Web 都需要知道 Signal 地址，但它们**用不同的变量、在不同的时机**配置，而且两者必须指向同一个 Signal：
+
+| 谁要连 Signal | 用哪个变量 | 注入时机 | 改了之后怎么生效 |
+| --- | --- | --- | --- |
+| Host | `P2P_SIGNAL_URL`（或 `CODERELAY_SIGNAL_URL`） | 运行时，启动 Host 前设置 | 重启 Host 进程 |
+| Web | `VITE_CODERELAY_SIGNAL_URL` | 构建时，`npm run build` 时写入前端包 | 重新构建 + 重新部署 Web |
+
+所以在 Vercel 这类平台上，`VITE_CODERELAY_SIGNAL_URL` 要配在**项目的构建环境变量**里、并触发一次重新部署；它不是 Host 运行时读取的，也不能在 Host 上设置。最常见的错误就是：只改了 Web 服务器上的环境变量却没重新构建，浏览器里跑的还是旧的 Signal 地址。
+
 ## 组件文档
 
 - [Host 运行与配置](./host-runtime.md)：Host 的环境变量、P2P 配置、systemd 示例、健康检查。

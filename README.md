@@ -73,6 +73,8 @@ start-host.bat
 start-web.bat
 ```
 
+> 说明：`start-host.bat` 是「本地全功能」启动脚本，为了方便本地试 P2P，它默认也会设置 `P2P_SIGNAL_URL=ws://127.0.0.1:8787/`。如果你只用 HTTP / ZeroTier、没有启动 Signal，Host 会在后台尝试连接这个并不存在的 Signal 并失败重试——**这不影响 HTTP 续聊**，相关日志可以忽略。若想完全关掉 P2P，启动前设 `set P2P_SIGNAL_URL=` 清空即可。
+
 默认地址：
 
 - Web: `http://127.0.0.1:3000`
@@ -155,11 +157,20 @@ $env:VITE_CODERELAY_SIGNAL_URL="ws://172.30.1.2:8787/"
 - [Web 构建与托管](./docs/deployment/web-runtime.md)
 - [上线检查清单](./docs/deployment/production-checklist.md)
 
-变量生效时机的快速结论：
+变量生效时机的快速结论（这是最容易配错的地方）：
 
-- Web 的 `VITE_*`：构建时注入，改完后要重新构建并重新部署 Web。
-- Web 开发模式的 `CODERELAY_DEV_API_TARGET`：启动 `npm run dev:web` 时读取，改完后重启开发服务器。
-- Host / Signal 的环境变量：进程启动时读取，改完后重启 Host / Signal。
+- **Web 前端的 `VITE_*` 是「构建时」变量**：执行 `npm run build` 时被写死进 `apps/web/dist` 的 JS 包里。部署后只改服务器上的环境变量**不会生效**，必须重新构建并重新部署 Web。
+- **Host / Signal 的环境变量是「运行时」变量**：进程启动时读取。改完只需**重启进程**即可生效，不需要重新 `npm run build`（build 只是为了更新代码本身）。
+- Web 开发模式的 `CODERELAY_DEV_API_TARGET`：启动 `npm run dev:web` 时读取，只影响本地代理，改完后重启开发服务器。
+
+⚠️ 特别注意「指向哪个 Signal」要配**两次**，且时机不同，两边必须指向同一个 Signal：
+
+| 谁要连 Signal | 用哪个变量 | 注入时机 | 改了之后怎么生效 |
+| --- | --- | --- | --- |
+| Host | `P2P_SIGNAL_URL`（或 `CODERELAY_SIGNAL_URL`） | 运行时，启动 Host 前设置 | 重启 Host 进程 |
+| Web | `VITE_CODERELAY_SIGNAL_URL` | 构建时，`npm run build` 时写入前端包 | 重新构建 + 重新部署 Web |
+
+最常见的错误：只改了 Web 服务器上的环境变量却没重新构建，浏览器里跑的还是旧的 Signal 地址。详见 [部署文档](./docs/deployment/README.md)。
 
 ## 常用命令
 
