@@ -45,7 +45,7 @@ describe("HostP2PRuntime", () => {
         expiresAt: "2026-06-19T00:02:00.000Z",
       })
     );
-    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/pair\/[A-Z0-9]+$/);
+    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/pair\/[A-Z0-9]+#signal=ws%3A%2F%2Fsignal\.test%2F$/);
     expect(pairing.pairingUrl).not.toContain("p2p=");
   });
 
@@ -70,7 +70,7 @@ describe("HostP2PRuntime", () => {
     await runtime.start();
     const pairing = runtime.openPairing({});
 
-    expect(pairing.pairingUrl).toBe("http://web.test/pair/ABCD12");
+    expect(pairing.pairingUrl).toBe("http://web.test/pair/ABCD12#signal=ws%3A%2F%2Fsignal.test%2F");
     expect(pairing.pairingUrl).not.toContain("p2p=");
     expect(pairing.pairCode).toBe("ABCD12");
     expect(signal.sent).toContainEqual(expect.objectContaining({
@@ -78,6 +78,28 @@ describe("HostP2PRuntime", () => {
       pairCode: "ABCD12",
       offer: pairing.offer,
     }));
+  });
+
+  it("keeps Signal URL in the hash when the Web URL already has a base path", async () => {
+    const runtime = new HostP2PRuntime({
+      signalUrl: "wss://signal.example.com/coderelay-signal/",
+      hostId: "host-test",
+      webUrl: "https://coderelay-web.vercel.app/app/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      createPairingCode: () => "CODE12",
+      createPairingId: () => "pair-test",
+      createPairingSecret: () => "secret-test",
+      createSignalSocket: () => new FakeSignalSocket(),
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    const pairing = runtime.openPairing({});
+
+    expect(pairing.pairingUrl).toBe(
+      "https://coderelay-web.vercel.app/app/pair/CODE12#signal=wss%3A%2F%2Fsignal.example.com%2Fcoderelay-signal%2F"
+    );
   });
 
   it("does not expose an expired pairing offer in status", async () => {
@@ -476,7 +498,7 @@ describe("HostP2PRuntime", () => {
       webUrl: "http://new-web.test/app",
       signalUrl: "ws://new-signal.test/",
     });
-    expect(pairing.pairingUrl).toBe("http://new-web.test/app/pair/ABCD12");
+    expect(pairing.pairingUrl).toBe("http://new-web.test/app/pair/ABCD12#signal=ws%3A%2F%2Fnew-signal.test%2F");
     expect(pairing.offer.webUrl).toBe("http://new-web.test/app");
     expect(pairing.offer.signalUrl).toBe("ws://new-signal.test/");
     expect(runtime.getManagementState().topology.signalUrl).toBe("ws://new-signal.test/");
@@ -587,6 +609,69 @@ describe("HostP2PRuntime", () => {
       connectionId: "conn-test",
       clientId: "client-phone",
     });
+  });
+
+  it("emits WebRTC diagnostics for connection evidence", async () => {
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const signal = new FakeSignalSocket();
+    const peer = new FakePeerConnection();
+    const diagnostics: unknown[] = [];
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      trustedDeviceStore: trustClient(createTrustedDeviceStore(), {
+        clientId: clientIdentity.deviceId,
+        clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+        addedAt: "2026-06-19T00:00:00.000Z",
+      }),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      createConnectionId: () => "conn-test",
+      createSignalSocket: () => signal,
+      createPeerConnection: () => peer,
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    await runtime.start();
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-client",
+      hostId: "host-test",
+      clientId: clientIdentity.deviceId,
+      clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+      clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+    });
+    await answerConnectionChallenge(signal, "req-client", clientIdentity);
+    signal.emitMessage({
+      type: "webrtc.candidate",
+      connectionId: "conn-test",
+      candidate: { candidate: "candidate:remote typ srflx", type: "srflx" },
+    });
+    signal.emitMessage({
+      type: "webrtc.offer",
+      connectionId: "conn-test",
+      sdp: "offer-sdp",
+    });
+    peer.onicecandidate?.({ candidate: { candidate: "candidate:local typ host", type: "host" } });
+    peer.emitDataChannel(new FakeDataChannel());
+    await flushAsync();
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: "p2p.connection.accepted", connectionId: "conn-test", clientId: "client-phone" }),
+        expect.objectContaining({ event: "p2p.webrtc.remote-candidate", connectionId: "conn-test", candidateType: "srflx" }),
+        expect.objectContaining({ event: "p2p.webrtc.offer.received", connectionId: "conn-test", sdpBytes: 9 }),
+        expect.objectContaining({ event: "p2p.webrtc.answer.sent", connectionId: "conn-test", sdpBytes: 10 }),
+        expect.objectContaining({ event: "p2p.webrtc.local-candidate", connectionId: "conn-test", candidateType: "host" }),
+        expect.objectContaining({ event: "p2p.datachannel.open", connectionId: "conn-test", clientId: "client-phone" }),
+      ])
+    );
   });
 
   it("does not let a slow old peer close clear a newer accepted peer", async () => {

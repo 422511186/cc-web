@@ -102,7 +102,7 @@ node apps\host\dist\index.js
 `P2P_ICE_LOCAL_ADDRESS` 是可选项。它适合局域网、ZeroTier、Tailscale 或固定内网地址场景。多个地址可以用逗号分隔：
 
 ```bash
-P2P_ICE_LOCAL_ADDRESSES=192.168.1.20,172.30.1.2
+P2P_ICE_LOCAL_ADDRESSES=192.168.1.20,192.168.50.20
 ```
 
 ## 环境变量
@@ -120,7 +120,7 @@ P2P_ICE_LOCAL_ADDRESSES=192.168.1.20,172.30.1.2
 | `MAX_CONCURRENT_SESSIONS` | `3` | Host 同时运行的 Claude agent 上限 |
 | `UPLOADS_DIR` | `<cwd>/uploads` | 图片上传保存目录 |
 | `CODERELAY_ALLOWED_ORIGINS` / `CORS_ALLOWED_ORIGINS` | 空 | 额外允许的 CORS origins，逗号分隔 |
-| `P2P_SIGNAL_URL` / `CODERELAY_SIGNAL_URL` | 空 | 设置后启用 P2P |
+| `P2P_SIGNAL_URL` / `CODERELAY_SIGNAL_URL` | 空 | 设置后启用 P2P；Host 生成二维码时会把该地址写入短链 `#signal=...` |
 | `P2P_HOST_ID` | `coderelay-host-<hostname>` | Host 稳定 ID |
 | `P2P_WEB_URL` | `http://127.0.0.1:3000` | Host 管理页二维码里写入的 Web 地址 |
 | `P2P_ICE_LOCAL_ADDRESS` / `P2P_ICE_LOCAL_ADDRESSES` | 空 | 暴露给 WebRTC 的本机候选地址，逗号分隔 |
@@ -187,6 +187,6 @@ http://<host-ip>:3002/host
 - `AUTH_TOKEN environment variable is required`：没有设置 `AUTH_TOKEN`。
 - `AUTH_TOKEN must be at least 16 characters`：令牌太短。
 - `CLAUDE_PROJECTS_DIR must be an absolute path`：历史目录必须是绝对路径。
-- 手机能打开 Web 但 P2P 连不上：检查 Host 的 `P2P_SIGNAL_URL` 和 Web 的 `VITE_CODERELAY_SIGNAL_URL` 是否指向同一个 Signal。
+- 手机能打开 Web 但 P2P 连不上：检查 Host 的 `P2P_SIGNAL_URL` 是否正确，并确认二维码短链里带有对应的 `#signal=...`。
 - 二维码打开了错误地址：检查 `P2P_WEB_URL`，它必须是手机可访问的 Web 地址。
 - 授权设备丢失：检查 `P2P_STATE_FILE` 是否被删除或放在了临时目录。

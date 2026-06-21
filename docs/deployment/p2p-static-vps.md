@@ -55,6 +55,8 @@ npm ci
 VITE_CODERELAY_SIGNAL_URL=wss://signal.example.com/ npm run build
 ```
 
+`VITE_CODERELAY_SIGNAL_URL` 是 Web 的默认 Signal 地址。扫码配对时，Host 生成的二维码短链会携带 `#signal=...`，浏览器会优先使用二维码里的运行时 Signal 地址。
+
 构建结果：
 
 ```text
@@ -66,7 +68,9 @@ apps/signal/dist
 
 ```bash
 cd /opt/coderelay
-PORT=8787 node apps/signal/dist/index.js
+PORT=8787 \
+STUN_URLS=stun:stun.cloudflare.com:3478,stun:global.stun.twilio.com:3478 \
+node apps/signal/dist/index.js
 ```
 
 建议使用 systemd 托管，详见 [Signal 运行与配置](./signal-runtime.md)。

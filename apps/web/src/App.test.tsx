@@ -446,6 +446,30 @@ describe('App P2P 配对与传输切换', () => {
     vi.unstubAllEnvs();
   });
 
+  test('短码配对链接优先使用 hash 中的 Signal 地址', async () => {
+    const p2pClient = await import('./p2pClient');
+    vi.stubEnv('VITE_CODERELAY_SIGNAL_URL', 'ws://build-time-signal.test/');
+    window.history.pushState(
+      {},
+      '',
+      '/pair/ABCD12#signal=wss%3A%2F%2Fruntime-signal.test%2Fcoderelay-signal%2F'
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText('P2P 已连接')).toBeInTheDocument();
+    expect(p2pClient.connectBrowserP2PFromPairCode).toHaveBeenCalledWith(
+      'ABCD12',
+      expect.objectContaining({
+        signalUrl: 'wss://runtime-signal.test/coderelay-signal/',
+        onDeviceRevoked: expect.any(Function),
+      })
+    );
+    expect(window.location.pathname).toBe('/');
+    expect(window.location.hash).toBe('');
+    vi.unstubAllEnvs();
+  });
+
   test('扫码链接进入且本机没有 token 时也直接连接 P2P，不显示 access token 登录页', async () => {
     const p2pClient = await import('./p2pClient');
     Storage.prototype.getItem = vi.fn(() => null);

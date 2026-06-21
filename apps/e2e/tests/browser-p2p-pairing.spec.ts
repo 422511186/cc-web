@@ -6,7 +6,7 @@ test("手机扫码配对链接后通过真实 WebRTC DataChannel 使用 P2PTrans
 
   await page.getByRole("button", { name: "生成二维码" }).click();
   const pairingUrlInput = page.locator("#pairing-url");
-  await expect(pairingUrlInput).toHaveValue(/\/pair\/[A-Z0-9]+$/);
+  await expect(pairingUrlInput).toHaveValue(/\/pair\/[A-Z0-9]+#signal=/);
   await expect(pairingUrlInput).not.toHaveValue(/p2p=/);
   await expect(page.getByAltText("配对二维码")).toBeVisible();
   await expect(page.getByLabel("链路拓扑")).toContainText("coderelay-e2e-host");

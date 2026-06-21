@@ -111,16 +111,21 @@ describe("connectBrowserP2P", () => {
     const socket = new FakeWebSocket();
     const channel = new FakeDataChannel();
     const peer = new FakePeerConnection(channel);
+    const peerConfigs: unknown[] = [];
     const createRequestId = vi.fn()
       .mockReturnValueOnce("pair-req-phone")
-      .mockReturnValueOnce("connect-req-phone");
+      .mockReturnValueOnce("connect-req-phone")
+      .mockReturnValueOnce("turn-req-phone");
     const sessionPromise = connectBrowserP2P(pairingOffer(), {
       createWebSocket: (url) => {
         expect(url).toBe("ws://signal.test/");
         queueMicrotask(() => socket.open());
         return socket as unknown as WebSocket;
       },
-      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      createPeerConnection: (config) => {
+        peerConfigs.push(config);
+        return peer as unknown as RTCPeerConnection;
+      },
       loadClientIdentity: () => Promise.resolve(clientIdentity),
       createRequestId,
       timeoutMs: 1000,
@@ -204,8 +209,19 @@ describe("connectBrowserP2P", () => {
       hostId: "host-test",
       clientId: "client-phone",
     });
+    await waitFor(() => socket.sent.some((message) => message.type === "turn.get"));
+    expect(socket.sent).toContainEqual({
+      type: "turn.get",
+      requestId: "turn-req-phone",
+    });
+    socket.message({
+      type: "turn.config",
+      requestId: "turn-req-phone",
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
 
     await waitFor(() => socket.sent.some((message) => message.type === "webrtc.offer"));
+    expect(peerConfigs).toEqual([{ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }]);
     expect(peer.localDescriptions).toEqual([{ type: "offer", sdp: "offer-sdp" }]);
     expect(socket.sent).toContainEqual({
       type: "webrtc.offer",
@@ -302,6 +318,7 @@ describe("connectBrowserP2P", () => {
     const socket = new FakeWebSocket();
     const channel = new FakeDataChannel();
     const peer = new FakePeerConnection(channel);
+    const peerConfigs: unknown[] = [];
     const createRequestId = vi.fn().mockReturnValueOnce("connect-req-phone");
 
     const sessionPromise = connectTrustedBrowserP2P(trustedHostProfile(), {
@@ -310,7 +327,10 @@ describe("connectBrowserP2P", () => {
         queueMicrotask(() => socket.open());
         return socket as unknown as WebSocket;
       },
-      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      createPeerConnection: (config) => {
+        peerConfigs.push(config);
+        return peer as unknown as RTCPeerConnection;
+      },
       loadClientIdentity: () => Promise.resolve(clientIdentity),
       createRequestId,
       timeoutMs: 1000,
@@ -352,6 +372,8 @@ describe("connectBrowserP2P", () => {
       clientId: "client-phone",
     });
     await waitFor(() => socket.sent.some((message) => message.type === "webrtc.offer"));
+    expect(socket.sent.some((message) => message.type === "turn.get")).toBe(true);
+    expect(peerConfigs).toEqual([{ iceServers: [] }]);
     socket.message({
       type: "webrtc.answer",
       connectionId: "conn-test",

@@ -82,11 +82,11 @@ start-web.bat
 - Host 管理页: `http://127.0.0.1:3002/host`
 - 开发 token: `test-token-123456`
 
-如果手机通过 ZeroTier 访问电脑，把 `127.0.0.1` 换成电脑的 ZeroTier IP，例如：
+如果手机通过 ZeroTier、Tailscale 或局域网访问电脑，把 `127.0.0.1` 换成电脑在该网络里的地址，例如：
 
 ```text
-http://172.30.1.2:3000
-http://172.30.1.2:3002/host
+http://<host-ip>:3000
+http://<host-ip>:3002/host
 ```
 
 ## 快速启动：P2P 模式
@@ -122,10 +122,10 @@ npm run dev:web
 手机验证时通常把这些地址换成局域网或 ZeroTier IP：
 
 ```powershell
-$env:P2P_SIGNAL_URL="ws://172.30.1.2:8787/"
-$env:P2P_WEB_URL="http://172.30.1.2:3000"
-$env:P2P_ICE_LOCAL_ADDRESS="172.30.1.2"
-$env:VITE_CODERELAY_SIGNAL_URL="ws://172.30.1.2:8787/"
+$env:P2P_SIGNAL_URL="ws://<host-ip>:8787/"
+$env:P2P_WEB_URL="http://<host-ip>:3000"
+$env:P2P_ICE_LOCAL_ADDRESS="<host-ip>"
+$env:VITE_CODERELAY_SIGNAL_URL="ws://<host-ip>:8787/"
 ```
 
 配对流程：
@@ -163,14 +163,15 @@ $env:VITE_CODERELAY_SIGNAL_URL="ws://172.30.1.2:8787/"
 - **Host / Signal 的环境变量是「运行时」变量**：进程启动时读取。改完只需**重启进程**即可生效，不需要重新 `npm run build`（build 只是为了更新代码本身）。
 - Web 开发模式的 `CODERELAY_DEV_API_TARGET`：启动 `npm run dev:web` 时读取，只影响本地代理，改完后重启开发服务器。
 
-⚠️ 特别注意「指向哪个 Signal」要配**两次**，且时机不同，两边必须指向同一个 Signal：
+P2P 的 Signal 地址有两层来源：
 
 | 谁要连 Signal | 用哪个变量 | 注入时机 | 改了之后怎么生效 |
 | --- | --- | --- | --- |
 | Host | `P2P_SIGNAL_URL`（或 `CODERELAY_SIGNAL_URL`） | 运行时，启动 Host 前设置 | 重启 Host 进程 |
-| Web | `VITE_CODERELAY_SIGNAL_URL` | 构建时，`npm run build` 时写入前端包 | 重新构建 + 重新部署 Web |
+| Web 默认值 | `VITE_CODERELAY_SIGNAL_URL` | 构建时，`npm run build` 时写入前端包 | 重新构建 + 重新部署 Web |
+| Web 扫码配对 | 二维码短链里的 `#signal=...` | Host 生成二维码时写入 | 更新 Host 的 `P2P_SIGNAL_URL` 后重启或在管理页保存设置，再重新生成二维码 |
 
-最常见的错误：只改了 Web 服务器上的环境变量却没重新构建，浏览器里跑的还是旧的 Signal 地址。详见 [部署文档](./docs/deployment/README.md)。
+扫码配对时，Web 会优先使用二维码 hash 中的 Signal 地址；`VITE_CODERELAY_SIGNAL_URL` 只是没有扫码上下文时的默认值。hash 不会被浏览器发送给 Vercel/CDN。详见 [部署文档](./docs/deployment/README.md)。
 
 ## 常用命令
 
@@ -222,7 +223,10 @@ npm test --workspace @coderelay/transport
 | `P2P_ICE_LOCAL_ADDRESS` / `P2P_ICE_LOCAL_ADDRESSES` | 空 | 暴露给 WebRTC 的本机候选地址，逗号分隔 |
 | `P2P_PAIRING_TTL_MS` | `120000` | 配对二维码有效期 |
 | `P2P_STATE_FILE` | `~/.coderelay/p2p-host-state.json` | Host 身份和受信设备存储文件 |
-| `VITE_CODERELAY_SIGNAL_URL` | 空 | Web 前端连接 Signal 的地址 |
+| `VITE_CODERELAY_SIGNAL_URL` | 空 | Web 前端默认 Signal 地址；扫码短链里的 `#signal=...` 会覆盖它 |
+| `STUN_URL` / `STUN_URLS` | 空 | Signal 运行时下发的 STUN ICE server，多个 URL 用逗号分隔 |
+| `TURN_URL` / `TURN_USERNAME` / `TURN_CREDENTIAL` | 空 | Signal 运行时下发的 TURN ICE server |
+| `ICE_SERVERS_JSON` | 空 | Signal 运行时下发的完整 ICE server JSON 数组，优先于 `STUN_*` / `TURN_*` |
 
 ## Web 使用说明
 

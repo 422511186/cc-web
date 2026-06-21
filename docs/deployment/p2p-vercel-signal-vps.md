@@ -18,7 +18,7 @@
 操作顺序：
 
 1. 在 VPS 上部署 Signal，并通过 `wss://signal.example.com/` 暴露。
-2. 在 Vercel 上部署 Web，并设置 `VITE_CODERELAY_SIGNAL_URL`。
+2. 在 Vercel 上部署 Web。`VITE_CODERELAY_SIGNAL_URL` 可作为默认 Signal，但扫码配对会优先使用二维码短链里的 `#signal=...`。
 3. 在 Host 机器上启动 Host，并设置 `P2P_SIGNAL_URL`、`P2P_WEB_URL`。
 4. 打开 Host 管理页生成二维码。
 5. 手机扫码配对并连接 P2P。
@@ -58,7 +58,9 @@ git clone <repo-url> /opt/coderelay
 cd /opt/coderelay
 npm ci
 npm run build
-PORT=8787 node apps/signal/dist/index.js
+PORT=8787 \
+STUN_URLS=stun:stun.cloudflare.com:3478,stun:global.stun.twilio.com:3478 \
+node apps/signal/dist/index.js
 ```
 
 建议使用 systemd 托管，详见 [Signal 运行与配置](./signal-runtime.md)。
@@ -107,13 +109,13 @@ Vercel 配置：
 | Build Command | `npm run build` |
 | Output Directory | `apps/web/dist` |
 
-环境变量：
+可选环境变量：
 
 ```text
 VITE_CODERELAY_SIGNAL_URL=wss://signal.example.com/
 ```
 
-注意：`VITE_CODERELAY_SIGNAL_URL` 是构建时变量。修改后需要重新部署 Web。
+注意：`VITE_CODERELAY_SIGNAL_URL` 是构建时变量。修改后需要重新部署 Web。它只是默认值；Host 生成二维码时会把当前 `P2P_SIGNAL_URL` 写进短链 hash，扫码配对优先使用这个运行时地址。
 
 详见 [Web 构建与托管](./web-runtime.md)。
 
@@ -144,7 +146,7 @@ node apps/host/dist/index.js
 
 说明：
 
-- `P2P_SIGNAL_URL` 必须和 Web 的 `VITE_CODERELAY_SIGNAL_URL` 指向同一个 Signal。
+- `P2P_SIGNAL_URL` 是 Host 实际连接并写入二维码短链的 Signal 地址。
 - `P2P_WEB_URL` 是 Host 管理页生成二维码时写入的 Web 地址，必须是手机能打开的 HTTPS 地址。
 - `P2P_HOST_ID` 应保持稳定。
 - `P2P_STATE_FILE` 必须持久化。
@@ -154,7 +156,7 @@ node apps/host/dist/index.js
 
 1. 打开 Host 管理页：`http://<host-ip>:3002/host`。
 2. 点击添加设备，生成二维码。
-3. 手机扫描二维码，打开 `https://web.example.com` 的配对短链。
+3. 手机扫描二维码，打开形如 `https://web.example.com/pair/ABCD12#signal=...` 的配对短链。
 4. Host 管理页接受设备配对。
 5. Web 建立 P2P 连接后，进入会话页面。
 
@@ -174,4 +176,14 @@ node apps/host/dist/index.js
 
 这个方案仍然受 WebRTC NAT 穿透能力限制。如果 Host 和手机处在复杂 NAT、公司网络或运营商 CGNAT 后面，直连可能失败。
 
-当前内置 Signal 启动入口还没有 `TURN_*` 环境变量解析。需要公网级稳定穿透时，应补充 TURN 配置能力，或者先使用 ZeroTier / Tailscale 让 Host 暴露可路由候选地址。
+建议在公网 Signal 上至少配置 STUN：
+
+```bash
+PORT=8787 \
+STUN_URLS=stun:stun.cloudflare.com:3478,stun:global.stun.twilio.com:3478 \
+node apps/signal/dist/index.js
+```
+
+STUN 可以让 WebRTC 收集 `srflx` 公网反射候选，但不能保证所有 NAT 都能打洞成功。需要公网级稳定穿透时，应部署标准 TURN/coturn，并通过 Signal 的 `TURN_URL`、`TURN_USERNAME`、`TURN_CREDENTIAL` 或 `ICE_SERVERS_JSON` 下发。
+
+不要把 Signal 当成 TURN 中继。Signal 只负责配对和信令；业务数据仍走 WebRTC DataChannel，TURN 是 WebRTC 层的标准中继。

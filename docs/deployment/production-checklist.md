@@ -35,7 +35,6 @@ curl https://signal.example.com/healthz
 ```
 
 - HTTPS 页面使用的是 `wss://` Signal URL。
-- Web 的 `VITE_CODERELAY_SIGNAL_URL` 和 Host 的 `P2P_SIGNAL_URL` 指向同一个 Signal。
 - Nginx / Caddy 反代保留了 WebSocket Upgrade 头。
 - Signal 没有被误认为 TURN 中继。
 
@@ -56,6 +55,7 @@ http://<host-ip>:3002/host
 
 - Host 管理页可以生成二维码。
 - 二维码中的 Web 地址来自 `P2P_WEB_URL`，并且手机能访问。
+- 二维码短链带有 `#signal=...`，且该地址对应 Host 当前使用的 `P2P_SIGNAL_URL`。
 - 手机扫码后 Host 管理页能看到配对请求。
 - Host 接受配对后，手机能进入 Web。
 - 后续重新打开 Web，不需要每次扫码。
@@ -81,4 +81,3 @@ http://<host-ip>:3002/host
 - Signal 可公网访问，但不被当作权限边界。
 - 备份或迁移时包含 `P2P_STATE_FILE`。
 - 不提交 `.env`、日志、上传图片、测试报告和本地缓存。
-

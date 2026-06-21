@@ -43,7 +43,7 @@ export interface BrowserTrustedHostProfile {
 
 export interface BrowserP2PConnectOptions {
   readonly createWebSocket?: (url: string) => WebSocket;
-  readonly createPeerConnection?: () => RTCPeerConnection;
+  readonly createPeerConnection?: (configuration?: RTCConfiguration) => RTCPeerConnection;
   readonly createClientId?: () => string;
   readonly createRequestId?: () => string;
   readonly loadClientIdentity?: () => Promise<DeviceIdentity>;
@@ -53,6 +53,7 @@ export interface BrowserP2PConnectOptions {
 }
 
 type SignalMessage = Record<string, unknown> & { readonly type?: string };
+type BrowserIceServer = RTCIceServer;
 
 export interface BrowserPairCodeConnectOptions extends BrowserP2PConnectOptions {
   readonly signalUrl: string;
@@ -304,7 +305,9 @@ async function connectTrustedHostOverSignal({
     throw new Error("Signal accepted connection without connectionId");
   }
 
-  const peer = options.createPeerConnection?.() ?? new RTCPeerConnection();
+  const iceServers = await requestIceServers(signal, options, Math.min(timeoutMs, 500));
+  const peerConfig = { iceServers };
+  const peer = options.createPeerConnection?.(peerConfig) ?? new RTCPeerConnection(peerConfig);
   const pendingCandidates: unknown[] = [];
   let remoteDescriptionSet = false;
   const removeCandidateListener = signal.onMessage((message) => {
@@ -373,6 +376,48 @@ async function connectTrustedHostOverSignal({
       socket.close();
     },
   };
+}
+
+async function requestIceServers(
+  signal: BrowserSignalClient,
+  options: BrowserP2PConnectOptions,
+  timeoutMs: number,
+): Promise<BrowserIceServer[]> {
+  const requestId = nextRequestId(options, "turn");
+  signal.send({
+    type: "turn.get",
+    requestId,
+  });
+  const reply = await signal.waitFor(
+    (message) => (message.type === "turn.config" && message.requestId === requestId) || isSignalErrorForRequest(message, requestId),
+    timeoutMs,
+    "等待 Signal 返回 ICE 配置超时",
+  ).catch(() => null);
+  if (!reply || isSignalErrorForRequest(reply, requestId)) {
+    return [];
+  }
+  const value = reply.iceServers;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const urls = (entry as { urls?: unknown }).urls;
+    if (typeof urls !== "string" && !Array.isArray(urls)) {
+      return [];
+    }
+    return [{
+      urls: urls as string | string[],
+      username: typeof (entry as { username?: unknown }).username === "string"
+        ? (entry as { username: string }).username
+        : undefined,
+      credential: typeof (entry as { credential?: unknown }).credential === "string"
+        ? (entry as { credential: string }).credential
+        : undefined,
+    }];
+  });
 }
 
 class BrowserSignalClient {

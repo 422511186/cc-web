@@ -43,6 +43,11 @@ function replacePairingEntryUrl(): void {
 }
 
 function configuredSignalUrl(): string {
+  const runtimeSignalUrl = signalUrlFromHash();
+  if (runtimeSignalUrl) {
+    return runtimeSignalUrl;
+  }
+
   const configured = import.meta.env.VITE_CODERELAY_SIGNAL_URL;
   if (configured) {
     return configured;
@@ -50,6 +55,21 @@ function configuredSignalUrl(): string {
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}`;
+}
+
+function signalUrlFromHash(): string | null {
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  const value = new URLSearchParams(hash).get('signal');
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === 'ws:' || url.protocol === 'wss:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function isUnauthorizedError(error: unknown): boolean {

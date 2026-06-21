@@ -37,7 +37,7 @@ apps/web/dist
 
 | 变量 | 适用模式 | 说明 |
 | --- | --- | --- |
-| `VITE_CODERELAY_SIGNAL_URL` | P2P | Web 连接 Signal 的地址，例如 `wss://signal.example.com/` |
+| `VITE_CODERELAY_SIGNAL_URL` | P2P | Web 默认 Signal 地址，例如 `wss://signal.example.com/`；扫码配对时二维码短链里的 `#signal=...` 会覆盖它 |
 | `VITE_CODERELAY_API_BASE` | HTTP | Web 直连 Host API 的地址，例如 `https://host.example.com/api` 或 `http://192.168.1.20:3002/api` |
 
 Vite 的 `VITE_*` 变量是在构建时写入前端包的。修改这些变量后，必须重新构建并重新部署 Web。
@@ -69,11 +69,13 @@ CODERELAY_DEV_API_TARGET=http://192.168.1.20:3002 npm run dev:web
 | Build Command | `npm run build` |
 | Output Directory | `apps/web/dist` |
 
-P2P 模式需要在 Vercel 项目环境变量里配置：
+P2P 模式可以在 Vercel 项目环境变量里配置默认 Signal：
 
 ```text
 VITE_CODERELAY_SIGNAL_URL=wss://signal.example.com/
 ```
+
+这不是唯一来源。Host 管理页生成的二维码短链会携带 `#signal=...`，浏览器扫码配对时优先使用该运行时地址。因此 Web 可以作为较通用的静态站部署；只有希望普通首页在没有扫码上下文时也能知道默认 Signal，才需要设置这个变量。
 
 HTTP 直连模式需要配置：
 

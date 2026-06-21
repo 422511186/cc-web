@@ -35,4 +35,11 @@ describe("Host management page", () => {
     expect(html).toContain('id="topology-json"');
     expect(html).toContain("调试详情");
   });
+
+  it("uses documentation-reserved addresses in placeholders", () => {
+    const html = createHostManagementPage();
+
+    expect(html).toContain("192.0.2.20");
+    expect(html).not.toMatch(/\b172\.(1[6-9]|2\d|3[0-1])\./);
+  });
 });

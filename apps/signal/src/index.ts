@@ -557,6 +557,32 @@ export function createSignalHub(options: SignalHubOptions = {}): SignalHub {
   return new SignalHub(options);
 }
 
+export function loadIceServersFromEnv(env: Record<string, string | undefined> = process.env): SignalIceServer[] {
+  const json = env.ICE_SERVERS_JSON?.trim();
+  if (json) {
+    const parsed = JSON.parse(json) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("ICE_SERVERS_JSON must be a JSON array");
+    }
+    return parsed.map(parseIceServer);
+  }
+
+  const servers: SignalIceServer[] = [];
+  for (const url of parseCsv(env.STUN_URLS || env.STUN_URL || "")) {
+    servers.push({ urls: url });
+  }
+
+  const turnUrl = env.TURN_URL?.trim();
+  if (turnUrl) {
+    servers.push({
+      urls: turnUrl,
+      username: env.TURN_USERNAME,
+      credential: env.TURN_CREDENTIAL,
+    });
+  }
+  return servers;
+}
+
 export async function startSignalServer(options: StartSignalServerOptions = {}): Promise<StartedSignalServer> {
   const path = options.path ?? "/";
   const hub = options.hub ?? createSignalHub(options);
@@ -691,7 +717,28 @@ function hostForUrl(address: AddressInfo): string {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number.parseInt(process.env.PORT ?? "8787", 10);
-  startSignalServer({ port }).then((server) => {
+  const iceServers = loadIceServersFromEnv();
+  startSignalServer({ port, iceServers }).then((server) => {
     console.log(`${signalServiceName()} listening on ${server.url}`);
+    console.log(`ICE servers configured: ${iceServers.length}`);
   });
+}
+
+function parseIceServer(value: unknown): SignalIceServer {
+  if (typeof value !== "object" || value === null || typeof (value as { urls?: unknown }).urls !== "string") {
+    throw new Error("ICE server entries must include a string urls field");
+  }
+  const server = value as { urls: string; username?: unknown; credential?: unknown };
+  return {
+    urls: server.urls,
+    username: typeof server.username === "string" ? server.username : undefined,
+    credential: typeof server.credential === "string" ? server.credential : undefined,
+  };
+}
+
+function parseCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }

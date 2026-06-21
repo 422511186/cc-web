@@ -56,7 +56,13 @@ export interface HostP2PRuntimeOptions {
   readonly createPeerConnection?: () => HostPeerConnection;
   readonly createBridge?: (port: P2PMessagePort, handlers: P2PBridgeHandlers) => P2PBridge;
   readonly signalReconnectDelayMs?: number;
+  readonly onDiagnostic?: (event: HostP2PDiagnosticEvent) => void;
 }
+
+export type HostP2PDiagnosticEvent = Readonly<Record<string, unknown> & {
+  readonly event: string;
+  readonly timestamp: string;
+}>;
 
 export interface SignalSocket {
   readonly readyState: number;
@@ -120,11 +126,13 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
   private stopped = false;
   private publicWebUrl: string;
   private publicSignalUrl: string;
+  private runtimeIceServers: readonly RTCIceServer[];
 
   constructor(private readonly options: HostP2PRuntimeOptions) {
     this.trustedDeviceStore = options.trustedDeviceStore ?? createTrustedDeviceStore();
     this.publicWebUrl = options.webUrl;
     this.publicSignalUrl = options.signalUrl;
+    this.runtimeIceServers = options.iceServers ?? [];
     this.now = options.now ?? (() => Date.now());
     this.createPairingId = options.createPairingId ?? (() => `pair-${randomUUID()}`);
     this.createPairingSecret = options.createPairingSecret ?? (() => randomBytes(16).toString("base64url"));
@@ -217,10 +225,10 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
         signalStatus: this.signalStatus,
         peerStatus: this.peerStatus,
         iceLocalAddresses: [...(this.options.iceLocalAddresses ?? [])],
-        turnConfigured: (this.options.iceServers ?? []).some((server) =>
+        turnConfigured: this.runtimeIceServers.some((server) =>
           urlsForIceServer(server).some((url) => /^turns?:/i.test(url))
         ),
-        iceServers: (this.options.iceServers ?? []).map((server) => ({
+        iceServers: this.runtimeIceServers.map((server) => ({
           urls: server.urls,
           hasUsername: Boolean(server.username),
           hasCredential: Boolean(server.credential),
@@ -288,7 +296,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       now: this.now(),
       ttlMs: this.options.pairingTtlMs ?? DEFAULT_PAIRING_TTL_MS,
     }) satisfies HostPairingOffer;
-    const pairingUrl = pairingUrlFor(webUrl, pairCode);
+    const pairingUrl = pairingUrlFor(webUrl, pairCode, this.publicSignalUrl);
     const result = { pairCode, offer, pairingUrl };
     this.activePairing = result;
     this.sendSignal({
@@ -304,7 +312,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
 
   private createWeriftPeerConnection(): HostPeerConnection {
     const config: Partial<PeerConfig> = {
-      iceServers: [...(this.options.iceServers ?? [])],
+        iceServers: [...this.runtimeIceServers],
       iceTransportPolicy: "all",
       iceAdditionalHostAddresses: [...(this.options.iceLocalAddresses ?? [])],
       iceUseIpv4: true,
@@ -316,6 +324,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
   private markSignalOpen(): void {
     this.signalStatus = "connected";
     this.sendSignal({ type: "host.online", hostId: this.options.hostId });
+    this.sendSignal({ type: "turn.get", requestId: `host-turn-${randomUUID()}` });
     this.publishActivePairing();
   }
 
@@ -363,6 +372,11 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
 
     if (message.type === "client.connect") {
       this.handleClientConnect(message);
+      return;
+    }
+
+    if (message.type === "turn.config") {
+      this.handleTurnConfig(message);
       return;
     }
 
@@ -456,11 +470,21 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     this.remoteDescriptionSet = false;
     this.pendingCandidates.length = 0;
     this.connectionId = this.createConnectionId();
+    this.emitDiagnostic("p2p.connection.accepted", {
+      requestId,
+      connectionId: this.connectionId,
+      clientId,
+    });
     void this.markClientUsed(clientId, "p2p");
     const peer = this.createPeerConnection();
     this.peer = peer;
     peer.onicecandidate = (event) => {
       if (event.candidate && this.connectionId) {
+        this.emitDiagnostic("p2p.webrtc.local-candidate", {
+          connectionId: this.connectionId,
+          clientId,
+          candidateType: candidateType(event.candidate),
+        });
         this.sendSignal({
           type: "webrtc.candidate",
           connectionId: this.connectionId,
@@ -524,15 +548,27 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       return;
     }
 
+    this.emitDiagnostic("p2p.webrtc.offer.received", {
+      connectionId,
+      clientId: this.activeClientId,
+      sdpBytes: Buffer.byteLength(sdp, "utf8"),
+      queuedRemoteCandidates: this.pendingCandidates.length,
+    });
     await this.peer.setRemoteDescription({ type: "offer", sdp });
     this.remoteDescriptionSet = true;
     await this.flushPendingCandidates();
     const answer = await this.peer.createAnswer();
     await this.peer.setLocalDescription(answer);
+    const answerSdp = this.peer.localDescription?.sdp ?? answer.sdp;
+    this.emitDiagnostic("p2p.webrtc.answer.sent", {
+      connectionId,
+      clientId: this.activeClientId,
+      sdpBytes: Buffer.byteLength(answerSdp, "utf8"),
+    });
     this.sendSignal({
       type: "webrtc.answer",
       connectionId,
-      sdp: this.peer.localDescription?.sdp ?? answer.sdp,
+      sdp: answerSdp,
     });
   }
 
@@ -546,12 +582,31 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       return;
     }
 
+    this.emitDiagnostic("p2p.webrtc.remote-candidate", {
+      connectionId,
+      clientId: this.activeClientId,
+      candidateType: candidateType(candidate),
+      remoteDescriptionSet: this.remoteDescriptionSet,
+    });
     if (!this.remoteDescriptionSet) {
       this.pendingCandidates.push(candidate);
       return;
     }
 
     await this.peer.addIceCandidate(candidate);
+  }
+
+  private handleTurnConfig(message: SignalInboundMessage): void {
+    const iceServers = iceServersField(message, "iceServers");
+    if (!iceServers) {
+      return;
+    }
+    this.runtimeIceServers = iceServers;
+    this.emitDiagnostic("p2p.ice.config", {
+      iceServerCount: iceServers.length,
+      turnConfigured: iceServers.some((server) => urlsForIceServer(server).some((url) => /^turns?:/i.test(url))),
+      stunConfigured: iceServers.some((server) => urlsForIceServer(server).some((url) => /^stun:/i.test(url))),
+    });
   }
 
   private async flushPendingCandidates(): Promise<void> {
@@ -568,6 +623,11 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     this.activeChannel = channel;
     const setConnected = () => {
       this.peerStatus = "connected";
+      this.emitDiagnostic("p2p.datachannel.open", {
+        connectionId: this.connectionId,
+        clientId: this.activeClientId,
+        readyState: channel.readyState,
+      });
       this.bridge?.close();
       this.bridge = this.createBridge(
         dataChannelPort(channel, () => {
@@ -689,6 +749,17 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     };
     await this.options.onTrustedDeviceStoreChanged?.(this.trustedDeviceStore);
   }
+
+  private emitDiagnostic(event: string, detail: Record<string, unknown> = {}): void {
+    const diagnostic = {
+      event,
+      timestamp: new Date(this.now()).toISOString(),
+      hostId: this.options.hostId,
+      ...detail,
+    } satisfies HostP2PDiagnosticEvent;
+    this.options.onDiagnostic?.(diagnostic);
+    console.log("[coderelay:p2p]", JSON.stringify(diagnostic));
+  }
 }
 
 function dataChannelPort(channel: HostDataChannel, onDisconnect: () => void): P2PMessagePort {
@@ -737,6 +808,31 @@ function jsonWebKeyField(message: SignalInboundMessage, key: string): JsonWebKey
   return undefined;
 }
 
+function iceServersField(message: SignalInboundMessage, key: string): readonly RTCIceServer[] | undefined {
+  const value = message[key];
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const urls = (entry as { urls?: unknown }).urls;
+    if (typeof urls !== "string" && !Array.isArray(urls)) {
+      return [];
+    }
+    return [{
+      urls: urls as RTCIceServer["urls"],
+      username: typeof (entry as { username?: unknown }).username === "string"
+        ? (entry as { username: string }).username
+        : undefined,
+      credential: typeof (entry as { credential?: unknown }).credential === "string"
+        ? (entry as { credential: string }).credential
+        : undefined,
+    }];
+  });
+}
+
 function pairingProofField(message: SignalInboundMessage, key: string): PairingProof | undefined {
   const value = message[key];
   if (typeof value === "object" && value !== null && (value as { protocol?: unknown }).protocol === "coderelay-pairing-proof-v1") {
@@ -760,17 +856,40 @@ function challengeProofField(message: SignalInboundMessage, key: string): Challe
   return undefined;
 }
 
-function pairingUrlFor(webUrl: string, pairCode: string): string {
+function pairingUrlFor(webUrl: string, pairCode: string, signalUrl: string): string {
   const url = new URL(webUrl);
   const basePath = url.pathname.replace(/\/$/, "");
   url.pathname = `${basePath}/pair/${encodeURIComponent(pairCode)}`;
   url.search = "";
-  url.hash = "";
+  url.hash = new URLSearchParams({ signal: signalUrl }).toString();
   return url.toString();
 }
 
 function createHostFingerprint(hostId: string): string {
   return createHash("sha256").update(`coderelay-host:${hostId}`).digest("base64url");
+}
+
+function candidateType(candidate: unknown): string {
+  if (typeof candidate === "object" && candidate !== null) {
+    const directType = (candidate as { type?: unknown }).type;
+    if (typeof directType === "string" && directType) {
+      return directType;
+    }
+    const raw = (candidate as { candidate?: unknown }).candidate;
+    if (typeof raw === "string") {
+      const match = raw.match(/\btyp\s+([a-z0-9-]+)/i);
+      if (match?.[1]) {
+        return match[1].toLowerCase();
+      }
+    }
+  }
+  if (typeof candidate === "string") {
+    const match = candidate.match(/\btyp\s+([a-z0-9-]+)/i);
+    if (match?.[1]) {
+      return match[1].toLowerCase();
+    }
+  }
+  return "unknown";
 }
 
 function urlsForIceServer(server: RTCIceServer): readonly string[] {

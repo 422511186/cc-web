@@ -453,11 +453,11 @@ export function createHostManagementPage(): string {
         </div>
         <div>
           <label for="web-url">Web 地址</label>
-          <input id="web-url" placeholder="http://172.30.1.2:3000" />
+          <input id="web-url" placeholder="http://192.0.2.20:3000" />
         </div>
         <div>
           <label for="signal-url">Signal 地址</label>
-          <input id="signal-url" placeholder="ws://172.30.1.2:8787/" />
+          <input id="signal-url" placeholder="ws://192.0.2.20:8787/" />
         </div>
         <div class="row">
           <button id="save-settings" type="button">保存设置</button>
