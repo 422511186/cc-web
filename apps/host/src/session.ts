@@ -267,6 +267,15 @@ export class Session {
           if (this.closed || this.detached) break;
           this.handleSdkMessage(msg);
         }
+        if (
+          !this.closed &&
+          !this.detached &&
+          !this.abortingCurrentTurn &&
+          !abortController.signal.aborted &&
+          this.executing
+        ) {
+          this.finishCurrentOperation(false);
+        }
         if (this.activeQuery === stream) {
           this.activeQuery = null;
         }
@@ -371,28 +380,32 @@ export class Session {
       }
       case "result": {
         const isError = (msg as { is_error?: boolean }).is_error ?? false;
-        if (this.currentOperationId) {
-          this.emit({
-            type: isError ? "message_failed" : "message_completed",
-            operationId: this.currentOperationId,
-            ...(isError ? { message: "message failed" } : {}),
-          } as ServerEvent);
-          this.currentOperationId = null;
-        }
-        this.executing = false;
-        this.emit({ type: "turn_end", isError });
-        const nextOperationId = this.queuedOperations.shift();
-        if (nextOperationId) {
-          this.startOperation(nextOperationId);
-        } else {
-          // 状态转移:一轮结束,回到空闲可发下一条
-          this.emit({ type: "status", state: "idle" });
-        }
+        this.finishCurrentOperation(isError);
         break;
       }
       default:
         // 其余 SDK 消息类型本计划忽略
         break;
+    }
+  }
+
+  private finishCurrentOperation(isError: boolean): void {
+    if (this.currentOperationId) {
+      this.emit({
+        type: isError ? "message_failed" : "message_completed",
+        operationId: this.currentOperationId,
+        ...(isError ? { message: "message failed" } : {}),
+      } as ServerEvent);
+      this.currentOperationId = null;
+    }
+    this.executing = false;
+    this.emit({ type: "turn_end", isError });
+    const nextOperationId = this.queuedOperations.shift();
+    if (nextOperationId) {
+      this.startOperation(nextOperationId);
+    } else {
+      // 状态转移:一轮结束,回到空闲可发下一条
+      this.emit({ type: "status", state: "idle" });
     }
   }
 }

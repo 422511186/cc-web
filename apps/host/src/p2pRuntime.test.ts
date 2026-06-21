@@ -45,7 +45,7 @@ describe("HostP2PRuntime", () => {
         expiresAt: "2026-06-19T00:02:00.000Z",
       })
     );
-    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/pair\/[A-Z0-9]+#signal=ws%3A%2F%2Fsignal\.test%2F$/);
+    expect(pairing.pairingUrl).toMatch(/^http:\/\/web\.test\/pair\/[A-Z0-9]+\?v=pair-test#signal=ws%3A%2F%2Fsignal\.test%2F$/);
     expect(pairing.pairingUrl).not.toContain("p2p=");
   });
 
@@ -70,7 +70,7 @@ describe("HostP2PRuntime", () => {
     await runtime.start();
     const pairing = runtime.openPairing({});
 
-    expect(pairing.pairingUrl).toBe("http://web.test/pair/ABCD12#signal=ws%3A%2F%2Fsignal.test%2F");
+    expect(pairing.pairingUrl).toBe("http://web.test/pair/ABCD12?v=pair-test#signal=ws%3A%2F%2Fsignal.test%2F");
     expect(pairing.pairingUrl).not.toContain("p2p=");
     expect(pairing.pairCode).toBe("ABCD12");
     expect(signal.sent).toContainEqual(expect.objectContaining({
@@ -98,7 +98,7 @@ describe("HostP2PRuntime", () => {
     const pairing = runtime.openPairing({});
 
     expect(pairing.pairingUrl).toBe(
-      "https://coderelay-web.vercel.app/app/pair/CODE12#signal=wss%3A%2F%2Fsignal.example.com%2Fcoderelay-signal%2F"
+      "https://coderelay-web.vercel.app/app/pair/CODE12?v=pair-test#signal=wss%3A%2F%2Fsignal.example.com%2Fcoderelay-signal%2F"
     );
   });
 
@@ -498,7 +498,7 @@ describe("HostP2PRuntime", () => {
       webUrl: "http://new-web.test/app",
       signalUrl: "ws://new-signal.test/",
     });
-    expect(pairing.pairingUrl).toBe("http://new-web.test/app/pair/ABCD12#signal=ws%3A%2F%2Fnew-signal.test%2F");
+    expect(pairing.pairingUrl).toBe("http://new-web.test/app/pair/ABCD12?v=pair-test#signal=ws%3A%2F%2Fnew-signal.test%2F");
     expect(pairing.offer.webUrl).toBe("http://new-web.test/app");
     expect(pairing.offer.signalUrl).toBe("ws://new-signal.test/");
     expect(runtime.getManagementState().topology.signalUrl).toBe("ws://new-signal.test/");
@@ -609,6 +609,136 @@ describe("HostP2PRuntime", () => {
       connectionId: "conn-test",
       clientId: "client-phone",
     });
+  });
+
+  it("keeps multiple authorized devices online without closing earlier P2P connections", async () => {
+    const firstClient = await createDeviceIdentity({
+      deviceId: "client-phone-a",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const secondClient = await createDeviceIdentity({
+      deviceId: "client-phone-b",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const signal = new FakeSignalSocket();
+    const firstPeer = new FakePeerConnection();
+    const secondPeer = new FakePeerConnection();
+    const firstBridge = { close: vi.fn() };
+    const secondBridge = { close: vi.fn() };
+    const createBridge = vi.fn()
+      .mockReturnValueOnce(firstBridge)
+      .mockReturnValueOnce(secondBridge);
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      trustedDeviceStore: trustClient(
+        trustClient(createTrustedDeviceStore(), {
+          clientId: firstClient.deviceId,
+          clientPublicKeyJwk: firstClient.publicKeyJwk,
+          addedAt: "2026-06-19T00:00:00.000Z",
+        }),
+        {
+          clientId: secondClient.deviceId,
+          clientPublicKeyJwk: secondClient.publicKeyJwk,
+          addedAt: "2026-06-19T00:00:00.000Z",
+        },
+      ),
+      now: () => Date.parse("2026-06-19T00:00:00.000Z"),
+      createConnectionId: vi.fn()
+        .mockReturnValueOnce("conn-a")
+        .mockReturnValueOnce("conn-b"),
+      createSignalSocket: () => signal,
+      createPeerConnection: vi.fn()
+        .mockReturnValueOnce(firstPeer)
+        .mockReturnValueOnce(secondPeer),
+      createBridge,
+    });
+
+    await runtime.start();
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-a",
+      hostId: "host-test",
+      clientId: firstClient.deviceId,
+      clientPublicKeyJwk: firstClient.publicKeyJwk,
+      clientPublicKeyFingerprint: firstClient.publicKeyFingerprint,
+    });
+    await answerConnectionChallenge(signal, "req-a", firstClient);
+    const firstChannel = new FakeDataChannel();
+    firstPeer.emitDataChannel(firstChannel);
+    await flushAsync();
+
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-b",
+      hostId: "host-test",
+      clientId: secondClient.deviceId,
+      clientPublicKeyJwk: secondClient.publicKeyJwk,
+      clientPublicKeyFingerprint: secondClient.publicKeyFingerprint,
+    });
+    await answerConnectionChallenge(signal, "req-b", secondClient);
+    const secondChannel = new FakeDataChannel();
+    secondPeer.emitDataChannel(secondChannel);
+    await flushAsync();
+
+    expect(firstPeer.closeCalls).toBe(0);
+    expect(firstBridge.close).not.toHaveBeenCalled();
+    expect(secondPeer.closeCalls).toBe(0);
+    expect(secondBridge.close).not.toHaveBeenCalled();
+    expect(createBridge).toHaveBeenCalledTimes(2);
+
+    const [firstPort] = createBridge.mock.calls[0];
+    const [secondPort] = createBridge.mock.calls[1];
+    firstPort.send("host to first");
+    secondPort.send("host to second");
+
+    expect(firstChannel.sent).toEqual(["host to first"]);
+    expect(secondChannel.sent).toEqual(["host to second"]);
+    expect(runtime.getManagementState().topology.activeConnections).toEqual([
+      expect.objectContaining({ clientId: "client-phone-a", connectionId: "conn-a" }),
+      expect.objectContaining({ clientId: "client-phone-b", connectionId: "conn-b" }),
+    ]);
+  });
+
+  it("rejects untrusted reconnect attempts explicitly instead of leaving the client waiting for a challenge", async () => {
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    const signal = new FakeSignalSocket();
+    const runtime = new HostP2PRuntime({
+      signalUrl: "ws://signal.test/",
+      hostId: "host-test",
+      webUrl: "http://web.test/",
+      localApiBaseUrl: "http://127.0.0.1:3002/api",
+      authToken: "test-token-123456",
+      trustedDeviceStore: createTrustedDeviceStore(),
+      createSignalSocket: () => signal,
+      createPeerConnection: () => new FakePeerConnection(),
+      createBridge: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    await runtime.start();
+    signal.emitMessage({
+      type: "client.connect",
+      requestId: "req-client",
+      hostId: "host-test",
+      clientId: clientIdentity.deviceId,
+      clientPublicKeyJwk: clientIdentity.publicKeyJwk,
+      clientPublicKeyFingerprint: clientIdentity.publicKeyFingerprint,
+    });
+
+    expect(signal.sent).toContainEqual({
+      type: "connection.reject",
+      requestId: "req-client",
+      hostId: "host-test",
+      clientId: "client-phone",
+      reason: "untrusted_client",
+    });
+    expect(signal.sent).not.toContainEqual(expect.objectContaining({ type: "connection.challenge" }));
   });
 
   it("emits WebRTC diagnostics for connection evidence", async () => {
@@ -834,6 +964,7 @@ class FakePeerConnection {
   ondatachannel?: (event: { channel: FakeDataChannel }) => void;
   readonly remoteDescriptions: unknown[] = [];
   readonly localDescriptions: unknown[] = [];
+  closeCalls = 0;
   localDescription?: { type: "answer"; sdp: string };
 
   constructor(private readonly closePromise: Promise<void> = Promise.resolve()) {}
@@ -854,6 +985,7 @@ class FakePeerConnection {
   async addIceCandidate(): Promise<void> {}
 
   async close(): Promise<void> {
+    this.closeCalls += 1;
     await this.closePromise;
   }
 

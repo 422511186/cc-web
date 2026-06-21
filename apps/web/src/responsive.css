@@ -11,7 +11,7 @@
   html, body {
     overflow: hidden !important;
     height: 100vh;
-    height: 100dvh; /* Use dynamic viewport height for mobile browsers */
+    height: var(--coderelay-visual-viewport-height, 100dvh);
     position: fixed;
     width: 100%;
     margin: 0;
@@ -20,7 +20,7 @@
 
   #root {
     height: 100vh;
-    height: 100dvh;
+    height: var(--coderelay-visual-viewport-height, 100dvh);
     overflow: hidden !important;
     position: relative;
   }
@@ -367,6 +367,7 @@
   border-top: 1px solid #d0d7de;
   background: #ffffff;
   padding: 0.625rem 0.75rem;
+  flex-shrink: 0;
 }
 
 .composer-row {
@@ -407,6 +408,11 @@
 }
 
 .composer-btn:hover { background: #eaeef2; }
+
+.composer-mode {
+  flex: 0 0 auto;
+  min-width: 0;
+}
 
 .composer-send {
   flex: 0 0 auto;
@@ -495,7 +501,74 @@
 
   .option { min-height: 44px; }
 
-  .composer-input { font-size: 16px; /* 防止 iOS 聚焦缩放 */ }
+  .composer {
+    padding-bottom: calc(0.625rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .composer-row {
+    display: grid;
+    grid-template-columns: 44px minmax(7rem, 1fr) 44px minmax(56px, auto);
+    grid-template-areas: "image input mode send";
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .composer-btn {
+    grid-area: image;
+    width: 44px;
+    height: 44px;
+  }
+
+  .composer-mode {
+    grid-area: mode;
+    width: 44px;
+    min-width: 44px;
+    display: flex;
+  }
+
+  .composer-mode > * {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  .composer-mode .mode-menu-trigger {
+    min-width: 44px !important;
+    width: 44px !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    overflow: hidden;
+  }
+
+  .composer-mode .mode-menu-trigger span:nth-child(2),
+  .composer-mode .mode-menu-trigger span:nth-child(3) {
+    display: none;
+  }
+
+  .composer-mode .mode-menu-panel {
+    right: 0 !important;
+    left: auto !important;
+    width: min(20rem, calc(100vw - 1.5rem)) !important;
+  }
+
+  .composer-mode .mode-menu-item {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .composer-input {
+    grid-area: input;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    font-size: 16px; /* 防止 iOS 聚焦缩放 */
+  }
+
+  .composer-send {
+    grid-area: send;
+    min-width: 56px;
+    padding: 0 0.65rem;
+    white-space: nowrap;
+  }
 
   /* 状态栏在移动端换行显示，避免挤在一起 */
   .status-bar {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createChallenge, createDeviceIdentity, createTrustedDeviceStore, trustHost } from "@coderelay/p2p-core";
-import { connectBrowserP2P, connectBrowserP2PFromPairCode, decodePairingOfferFromUrl } from "./p2pClient";
+import { connectBrowserP2P, connectBrowserP2PFromPairCode, connectTrustedBrowserP2P, decodePairingOfferFromUrl } from "./p2pClient";
 
 beforeEach(() => {
   localStorage.clear();
@@ -458,6 +458,49 @@ describe("connectBrowserP2P", () => {
     }));
 
     expect(onDeviceRevoked).toHaveBeenCalledWith("此设备授权已被 Host 撤销，请在电脑端重新扫码或获取新的授权链接。");
+    expect(localStorage.getItem("coderelay-last-trusted-host-v1")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("coderelay-trusted-device-store-v1") ?? "{}").trustedHosts).toEqual([]);
+  });
+
+  it("clears stale trusted host state when Host rejects a trusted reconnect", async () => {
+    const clientIdentity = await createDeviceIdentity({
+      deviceId: "client-phone",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    });
+    localStorage.setItem(
+      "coderelay-trusted-device-store-v1",
+      JSON.stringify(
+        trustHost(createTrustedDeviceStore(), {
+          hostId: "host-test",
+          hostPublicKeyJwk: pairingOffer().hostPublicKeyJwk,
+          displayName: "host-test",
+        })
+      )
+    );
+    localStorage.setItem("coderelay-last-trusted-host-v1", JSON.stringify(trustedHostProfile()));
+    const socket = new FakeWebSocket();
+    const onDeviceRevoked = vi.fn();
+    const sessionPromise = connectTrustedBrowserP2P(trustedHostProfile(), {
+      createWebSocket: () => {
+        queueMicrotask(() => socket.open());
+        return socket as unknown as WebSocket;
+      },
+      createPeerConnection: () => new FakePeerConnection(new FakeDataChannel()) as unknown as RTCPeerConnection,
+      loadClientIdentity: () => Promise.resolve(clientIdentity),
+      createRequestId: vi.fn().mockReturnValueOnce("connect-req-phone"),
+      onDeviceRevoked,
+      timeoutMs: 1000,
+    });
+
+    await waitFor(() => socket.sent.some((message) => message.type === "client.connect"));
+    socket.message({
+      type: "signal.error",
+      requestId: "connect-req-phone",
+      reason: "untrusted_client",
+    });
+
+    await expect(sessionPromise).rejects.toThrow("此设备授权已失效，请在电脑端重新扫码或获取新的授权链接。");
+    expect(onDeviceRevoked).toHaveBeenCalledWith("此设备授权已失效，请在电脑端重新扫码或获取新的授权链接。");
     expect(localStorage.getItem("coderelay-last-trusted-host-v1")).toBeNull();
     expect(JSON.parse(localStorage.getItem("coderelay-trusted-device-store-v1") ?? "{}").trustedHosts).toEqual([]);
   });

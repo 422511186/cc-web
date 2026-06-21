@@ -143,6 +143,9 @@ export class SignalHub {
       case "connection.challenge_response":
         this.handleConnectionChallengeResponse(session, message);
         break;
+      case "connection.reject":
+        this.handleConnectionReject(session, message);
+        break;
       case "connection.accept":
         this.handleConnectionAccept(session, message);
         break;
@@ -459,6 +462,30 @@ export class SignalHub {
       hostId,
       clientId,
       proof,
+    });
+  }
+
+  private handleConnectionReject(session: SignalSessionImpl, message: SignalInboundMessage): void {
+    const requestId = stringField(message, "requestId");
+    const hostId = stringField(message, "hostId");
+    const clientId = stringField(message, "clientId");
+    const reason = stringField(message, "reason") ?? "connection_rejected";
+    if (!requestId || !hostId || !clientId) {
+      this.sendError(session, requestId, "invalid_message");
+      return;
+    }
+
+    const pending = this.pendingConnections.get(requestId);
+    if (!pending || pending.hostSession !== session || pending.hostId !== hostId || pending.clientId !== clientId) {
+      this.sendError(session, requestId, "connection_not_found");
+      return;
+    }
+
+    this.pendingConnections.delete(requestId);
+    pending.clientSession.send({
+      type: "signal.error",
+      requestId,
+      reason,
     });
   }
 

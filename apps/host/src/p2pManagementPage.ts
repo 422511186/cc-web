@@ -572,10 +572,13 @@ export function createHostManagementPage(): string {
         devicesEl.innerHTML = '<div class="empty-state">暂无已绑定设备</div>';
         return;
       }
-      const activeClientId = topology && topology.activeConnection ? topology.activeConnection.clientId : "";
+      const activeConnections = topology && Array.isArray(topology.activeConnections)
+        ? topology.activeConnections
+        : (topology && topology.activeConnection ? [topology.activeConnection] : []);
+      const activeClientIds = new Set(activeConnections.map((connection) => connection.clientId).filter(Boolean));
       devicesEl.innerHTML = devices.map((device) => {
         const revoked = Boolean(device.revokedAt);
-        const isActive = device.clientId === activeClientId;
+        const isActive = activeClientIds.has(device.clientId);
         const statusText = revoked ? "已撤销" : (isActive ? "在线" : "可信");
         const statusTone = revoked ? "bad" : (isActive ? "good" : "");
         return '<article class="device-card">' +
@@ -590,19 +593,25 @@ export function createHostManagementPage(): string {
     }
 
     function renderTopology(topology) {
-      const active = topology.activeConnection || {};
+      const activeConnections = Array.isArray(topology.activeConnections)
+        ? topology.activeConnections
+        : (topology.activeConnection ? [topology.activeConnection] : []);
+      const active = activeConnections[0] || {};
+      const activeSummary = activeConnections.length
+        ? activeConnections.map((connection) => compactId(connection.clientId) + "\\n" + (connection.connectionId || "-")).join("\\n\\n")
+        : "暂无活跃连接";
       topologyCardsEl.innerHTML =
         topologyField("信令服务", connectionLabel(topology.signalStatus) + "\\n" + (topology.signalUrl || "-")) +
         topologyField("Host ID", topology.hostId || "-") +
-        topologyField("当前连接", active.clientId ? compactId(active.clientId) + "\\n" + (active.route || "WebRTC DataChannel") : "暂无活跃连接") +
+        topologyField("活跃连接", activeSummary) +
         topologyField("本机地址", (topology.iceLocalAddresses || []).join("\\n") || "-") +
         topologyField("TURN 中继", topology.turnConfigured ? "已配置" : "未配置") +
         topologyField("传输类型", active.transport ? transportLabel(active.transport) : connectionLabel(topology.peerStatus));
       topologyJsonEl.textContent = JSON.stringify(topology, null, 2);
       setStatusCard("signal-card", connectionLabel(topology.signalStatus), topology.signalUrl || "-", toneFor(topology.signalStatus));
-      setStatusCard("peer-card", connectionLabel(topology.peerStatus), active.route || "等待 WebRTC DataChannel", toneFor(topology.peerStatus));
+      setStatusCard("peer-card", connectionLabel(topology.peerStatus), activeConnections.length ? activeConnections.length + " 个活跃连接" : "等待 WebRTC DataChannel", toneFor(topology.peerStatus));
       setStatusCard("turn-card", topology.turnConfigured ? "已配置" : "未配置", topology.turnConfigured ? "可用作中继兜底" : "当前未使用 TURN", topology.turnConfigured ? "good" : "warn");
-      setStatusCard("device-card", active.clientId ? compactId(active.clientId) : "无连接", active.connectionId || "暂无活跃客户端", active.clientId ? "good" : "");
+      setStatusCard("device-card", activeConnections.length ? activeConnections.length + " 个在线" : "无连接", active.clientId ? compactId(active.clientId) : "暂无活跃客户端", activeConnections.length ? "good" : "");
     }
 
     function topologyField(label, value) {

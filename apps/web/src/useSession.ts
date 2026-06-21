@@ -165,6 +165,7 @@ export function useSession(runId: string | null): SessionState {
         break;
       case "turn_end":
         setPending(null);
+        setStatus("idle");
         break;
       case "error":
         setError(event.message);
@@ -183,6 +184,15 @@ export function useSession(runId: string | null): SessionState {
         break;
       case "mode_changed":
         setMode(event.mode);
+        break;
+      case "message_completed":
+        setPending(null);
+        setStatus("idle");
+        break;
+      case "message_failed":
+        setError(event.message);
+        setPending(null);
+        setStatus("idle");
         break;
       case "closed":
         setConnected(false);

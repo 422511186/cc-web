@@ -65,6 +65,7 @@ const CLIENT_IDENTITY_STORAGE_KEY = "coderelay-client-identity-v1";
 const TRUSTED_DEVICE_STORE_KEY = "coderelay-trusted-device-store-v1";
 const LAST_TRUSTED_HOST_PROFILE_KEY = "coderelay-last-trusted-host-v1";
 const DEFAULT_TIMEOUT_MS = 20_000;
+const TRUSTED_RECONNECT_REJECTED_MESSAGE = "此设备授权已失效，请在电脑端重新扫码或获取新的授权链接。";
 
 export function decodePairingOfferFromUrl(url: string): BrowserPairingOffer | null {
   const encoded = new URL(url, window.location.href).searchParams.get("p2p");
@@ -274,6 +275,11 @@ async function connectTrustedHostOverSignal({
     timeoutMs,
     "等待 Host 连接挑战超时",
   );
+  if (signalErrorReason(challengeMessage) === "untrusted_client") {
+    removeTrustedHost(hostId);
+    options.onDeviceRevoked?.(TRUSTED_RECONNECT_REJECTED_MESSAGE);
+    throw new Error(TRUSTED_RECONNECT_REJECTED_MESSAGE);
+  }
   throwIfSignalError(challengeMessage);
   const challenge = challengeField(challengeMessage, "challenge");
   if (!challenge) {
@@ -613,6 +619,10 @@ function isSignalErrorForRequest(message: SignalMessage, requestId: string): boo
   return message.type === "signal.error" && message.requestId === requestId;
 }
 
+function signalErrorReason(message: SignalMessage): string | undefined {
+  return message.type === "signal.error" ? stringField(message, "reason") : undefined;
+}
+
 function throwIfSignalError(message: SignalMessage): void {
   if (message.type !== "signal.error") {
     return;
@@ -631,6 +641,8 @@ function signalErrorMessage(reason: string | undefined): string {
       return "配对二维码已过期，请在电脑端重新生成";
     case "connection_not_found":
       return "P2P 连接已失效，请重新连接";
+    case "untrusted_client":
+      return TRUSTED_RECONNECT_REJECTED_MESSAGE;
     default:
       return reason ? `Signal 返回错误：${reason}` : "Signal 返回未知错误";
   }

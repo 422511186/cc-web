@@ -1058,7 +1058,7 @@ function App() {
   return (
     <div style={{
       display: 'flex',
-      height: '100vh',
+      height: 'var(--coderelay-visual-viewport-height, 100vh)',
       overflow: 'hidden',
     }}>
       <MobileMenu>

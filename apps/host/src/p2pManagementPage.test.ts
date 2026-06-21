@@ -36,6 +36,14 @@ describe("Host management page", () => {
     expect(html).toContain("调试详情");
   });
 
+  it("uses all active P2P connections when marking devices and topology online", () => {
+    const html = createHostManagementPage();
+
+    expect(html).toContain("topology.activeConnections");
+    expect(html).toContain("activeClientIds");
+    expect(html).toContain("活跃连接");
+  });
+
   it("uses documentation-reserved addresses in placeholders", () => {
     const html = createHostManagementPage();
 

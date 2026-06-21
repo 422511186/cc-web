@@ -147,7 +147,7 @@ TS 项目引用（project references）：host/web 的 `tsconfig.json` 都 `refe
 - `pending.ts`：`PendingRegistry`，登记待答项返回 `{id, promise}`，`settle(id, answer)` 兑现、`rejectAll` 关闭时拒绝。
 - `sseChannel.ts`：`SSEChannel`，单条 SSE 连接的写封装。
 - `uploads.ts`：`createUploadRouter`，`POST /api/uploads` 接收附件存到 `UPLOADS_DIR`，返回引用。
-- `p2pRuntime.ts` / `p2pRoutes.ts` / `p2pManagementPage.ts`：Host P2P 管理面。`/host` 是默认 HTTP 管理页，不需要 access token；`/api/host/settings`、`/api/p2p/management`、`/api/p2p/pairing`、`/api/p2p/devices/:clientId` 也供该页面免 token 使用。二维码由 Host 生成，格式为 Web 短链 `/pair/<pairCode>`；Signal 保存短码到完整 offer 的映射。设备撤销会先通过 DataChannel 发送 `device_revoked`，再关闭 peer，让手机端提示重新授权。
+- `p2pRuntime.ts` / `p2pRoutes.ts` / `p2pManagementPage.ts`：Host P2P 管理面。`/host` 是默认 HTTP 管理页，不需要 access token；`/api/host/settings`、`/api/p2p/management`、`/api/p2p/pairing`、`/api/p2p/devices/:clientId` 也供该页面免 token 使用。二维码由 Host 生成，格式为 Web 短链 `/pair/<pairCode>`；Signal 保存短码到完整 offer 的映射。Host 支持多个授权设备同时保持 P2P DataChannel，不能因新设备上线关闭旧设备；设备撤销会先通过对应 DataChannel 发送 `device_revoked`，再关闭该设备的 peer，让手机端提示重新授权，不影响其它已授权设备。
 
 注意：`*.test.ts` 在 host `tsconfig.json` 中被 `exclude`（测试由 Vitest 跑，不进构建产物）。
 

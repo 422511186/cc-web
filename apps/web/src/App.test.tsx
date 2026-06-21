@@ -189,6 +189,14 @@ describe('App responsive layout', () => {
     expect(sidebar).toBeInTheDocument();
   });
 
+  test('顶层布局使用 visual viewport 高度变量，避免手机键盘盖住输入区', () => {
+    const { container } = render(<App />);
+
+    expect(container.firstElementChild).toHaveStyle({
+      height: 'var(--coderelay-visual-viewport-height, 100vh)',
+    });
+  });
+
   test('renders desktop layout on large screens', () => {
     // Mock desktop media query
     window.matchMedia = vi.fn().mockImplementation(query => ({

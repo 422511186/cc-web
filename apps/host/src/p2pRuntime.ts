@@ -97,19 +97,24 @@ type SignalInboundMessage = Record<string, unknown> & { readonly type?: string }
 const DEFAULT_PAIRING_TTL_MS = 2 * 60 * 1000;
 const SIGNAL_OPEN = 1;
 
+interface ActivePeer {
+  readonly connectionId: string;
+  readonly clientId: string;
+  readonly peer: HostPeerConnection;
+  activeChannel?: HostDataChannel;
+  bridge?: P2PBridge;
+  remoteDescriptionSet: boolean;
+  readonly pendingCandidates: unknown[];
+  status: P2PPeerStatus;
+}
+
 export class HostP2PRuntime implements HostP2PRuntimeApi {
   private socket?: SignalSocket;
   private signalStatus: P2PSignalStatus = "disconnected";
   private peerStatus: P2PPeerStatus = "disconnected";
   private activePairing?: P2PPairingResult;
   private trustedDeviceStore: TrustedDeviceStore;
-  private peer?: HostPeerConnection;
-  private activeChannel?: HostDataChannel;
-  private bridge?: P2PBridge;
-  private connectionId?: string;
-  private activeClientId?: string;
-  private remoteDescriptionSet = false;
-  private readonly pendingCandidates: unknown[] = [];
+  private readonly activePeers = new Map<string, ActivePeer>();
   private readonly pendingConnectionChallenges = new Map<
     string,
     { readonly clientId: string; readonly clientPublicKeyJwk: JsonWebKey; readonly challenge: Challenge }
@@ -180,10 +185,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
-    this.bridge?.close();
-    this.bridge = undefined;
-    await this.peer?.close();
-    this.peer = undefined;
+    await Promise.all([...this.activePeers.keys()].map((connectionId) => this.closePeer(connectionId)));
     this.socket?.close();
     this.socket = undefined;
     this.signalStatus = "disconnected";
@@ -210,6 +212,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
   }
 
   getManagementState(): P2PManagementState {
+    const activeConnections = this.activeConnectionSummaries();
     return {
       devices: this.trustedDeviceStore.trustedClients.map((client) => ({
         clientId: client.clientId,
@@ -233,15 +236,8 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
           hasUsername: Boolean(server.username),
           hasCredential: Boolean(server.credential),
         })),
-        activeConnection:
-          this.activeClientId && this.connectionId
-            ? {
-                clientId: this.activeClientId,
-                connectionId: this.connectionId,
-                transport: "p2p",
-                route: "WebRTC DataChannel -> Host local HTTP bridge",
-              }
-            : undefined,
+        activeConnection: activeConnections[0],
+        activeConnections,
       },
     };
   }
@@ -256,10 +252,10 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       revokedAt: new Date(this.now()).toISOString(),
     });
     await this.options.onTrustedDeviceStoreChanged?.(this.trustedDeviceStore);
-    if (this.activeClientId === clientId) {
-      this.sendDeviceRevoked();
-      this.activeClientId = undefined;
-      await this.closePeer();
+    const connections = [...this.activePeers.values()].filter((active) => active.clientId === clientId);
+    for (const active of connections) {
+      this.sendDeviceRevoked(active);
+      await this.closePeer(active.connectionId);
     }
     return { ok: true, clientId };
   }
@@ -296,7 +292,7 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
       now: this.now(),
       ttlMs: this.options.pairingTtlMs ?? DEFAULT_PAIRING_TTL_MS,
     }) satisfies HostPairingOffer;
-    const pairingUrl = pairingUrlFor(webUrl, pairCode, this.publicSignalUrl);
+    const pairingUrl = pairingUrlFor(webUrl, pairCode, this.publicSignalUrl, offer.pairingId);
     const result = { pairCode, offer, pairingUrl };
     this.activePairing = result;
     this.sendSignal({
@@ -405,13 +401,11 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     const clientId = stringField(message, "clientId");
     const hostId = stringField(message, "hostId");
     const clientPublicKeyJwk = jsonWebKeyField(message, "clientPublicKeyJwk");
-    if (
-      !requestId ||
-      !clientId ||
-      hostId !== this.options.hostId ||
-      !clientPublicKeyJwk ||
-      !isTrustedClient(this.trustedDeviceStore, clientId, clientPublicKeyJwk)
-    ) {
+    if (!requestId || !clientId || hostId !== this.options.hostId) {
+      return;
+    }
+    if (!clientPublicKeyJwk || !isTrustedClient(this.trustedDeviceStore, clientId, clientPublicKeyJwk)) {
+      this.rejectConnection(requestId, clientId, "untrusted_client");
       return;
     }
 
@@ -464,42 +458,46 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
   }
 
   private acceptConnection(requestId: string, clientId: string): void {
-    void this.closePeer();
-    this.peerStatus = "connecting";
-    this.activeClientId = clientId;
-    this.remoteDescriptionSet = false;
-    this.pendingCandidates.length = 0;
-    this.connectionId = this.createConnectionId();
+    const connectionId = this.createConnectionId();
     this.emitDiagnostic("p2p.connection.accepted", {
       requestId,
-      connectionId: this.connectionId,
+      connectionId,
       clientId,
     });
     void this.markClientUsed(clientId, "p2p");
     const peer = this.createPeerConnection();
-    this.peer = peer;
+    const active: ActivePeer = {
+      connectionId,
+      clientId,
+      peer,
+      remoteDescriptionSet: false,
+      pendingCandidates: [],
+      status: "connecting",
+    };
+    this.activePeers.set(connectionId, active);
+    this.updatePeerStatus();
     peer.onicecandidate = (event) => {
-      if (event.candidate && this.connectionId) {
+      if (event.candidate && this.activePeers.get(connectionId) === active) {
         this.emitDiagnostic("p2p.webrtc.local-candidate", {
-          connectionId: this.connectionId,
+          connectionId,
           clientId,
           candidateType: candidateType(event.candidate),
         });
         this.sendSignal({
           type: "webrtc.candidate",
-          connectionId: this.connectionId,
+          connectionId,
           candidate: event.candidate,
         });
       }
     };
     peer.ondatachannel = (event) => {
-      this.attachDataChannel(event.channel);
+      this.attachDataChannel(active, event.channel);
     };
 
     this.sendSignal({
       type: "connection.accept",
       requestId,
-      connectionId: this.connectionId,
+      connectionId,
       clientId,
     });
   }
@@ -544,25 +542,26 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
   private async handleOffer(message: SignalInboundMessage): Promise<void> {
     const sdp = stringField(message, "sdp");
     const connectionId = stringField(message, "connectionId");
-    if (!sdp || !connectionId || connectionId !== this.connectionId || !this.peer) {
+    const active = connectionId ? this.activePeers.get(connectionId) : undefined;
+    if (!sdp || !connectionId || !active) {
       return;
     }
 
     this.emitDiagnostic("p2p.webrtc.offer.received", {
       connectionId,
-      clientId: this.activeClientId,
+      clientId: active.clientId,
       sdpBytes: Buffer.byteLength(sdp, "utf8"),
-      queuedRemoteCandidates: this.pendingCandidates.length,
+      queuedRemoteCandidates: active.pendingCandidates.length,
     });
-    await this.peer.setRemoteDescription({ type: "offer", sdp });
-    this.remoteDescriptionSet = true;
-    await this.flushPendingCandidates();
-    const answer = await this.peer.createAnswer();
-    await this.peer.setLocalDescription(answer);
-    const answerSdp = this.peer.localDescription?.sdp ?? answer.sdp;
+    await active.peer.setRemoteDescription({ type: "offer", sdp });
+    active.remoteDescriptionSet = true;
+    await this.flushPendingCandidates(active);
+    const answer = await active.peer.createAnswer();
+    await active.peer.setLocalDescription(answer);
+    const answerSdp = active.peer.localDescription?.sdp ?? answer.sdp;
     this.emitDiagnostic("p2p.webrtc.answer.sent", {
       connectionId,
-      clientId: this.activeClientId,
+      clientId: active.clientId,
       sdpBytes: Buffer.byteLength(answerSdp, "utf8"),
     });
     this.sendSignal({
@@ -574,7 +573,8 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
 
   private async handleCandidate(message: SignalInboundMessage): Promise<void> {
     const connectionId = stringField(message, "connectionId");
-    if (!connectionId || connectionId !== this.connectionId || !this.peer) {
+    const active = connectionId ? this.activePeers.get(connectionId) : undefined;
+    if (!connectionId || !active) {
       return;
     }
     const candidate = message.candidate;
@@ -584,16 +584,16 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
 
     this.emitDiagnostic("p2p.webrtc.remote-candidate", {
       connectionId,
-      clientId: this.activeClientId,
+      clientId: active.clientId,
       candidateType: candidateType(candidate),
-      remoteDescriptionSet: this.remoteDescriptionSet,
+      remoteDescriptionSet: active.remoteDescriptionSet,
     });
-    if (!this.remoteDescriptionSet) {
-      this.pendingCandidates.push(candidate);
+    if (!active.remoteDescriptionSet) {
+      active.pendingCandidates.push(candidate);
       return;
     }
 
-    await this.peer.addIceCandidate(candidate);
+    await active.peer.addIceCandidate(candidate);
   }
 
   private handleTurnConfig(message: SignalInboundMessage): void {
@@ -609,30 +609,25 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     });
   }
 
-  private async flushPendingCandidates(): Promise<void> {
-    if (!this.peer) {
-      return;
-    }
-
-    while (this.pendingCandidates.length > 0) {
-      await this.peer.addIceCandidate(this.pendingCandidates.shift());
+  private async flushPendingCandidates(active: ActivePeer): Promise<void> {
+    while (active.pendingCandidates.length > 0) {
+      await active.peer.addIceCandidate(active.pendingCandidates.shift());
     }
   }
 
-  private attachDataChannel(channel: HostDataChannel): void {
-    this.activeChannel = channel;
+  private attachDataChannel(active: ActivePeer, channel: HostDataChannel): void {
+    active.activeChannel = channel;
     const setConnected = () => {
-      this.peerStatus = "connected";
+      active.status = "connected";
+      this.updatePeerStatus();
       this.emitDiagnostic("p2p.datachannel.open", {
-        connectionId: this.connectionId,
-        clientId: this.activeClientId,
+        connectionId: active.connectionId,
+        clientId: active.clientId,
         readyState: channel.readyState,
       });
-      this.bridge?.close();
-      this.bridge = this.createBridge(
-        dataChannelPort(channel, () => {
-          this.peerStatus = "disconnected";
-        }),
+      active.bridge?.close();
+      active.bridge = this.createBridge(
+        dataChannelPort(channel, () => this.handlePeerDisconnected(active.connectionId)),
         createLocalHttpP2PBridgeHandlers({
           baseUrl: this.options.localApiBaseUrl,
           authToken: this.options.authToken,
@@ -641,16 +636,10 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     };
 
     channel.onclose = () => {
-      if (this.activeChannel === channel) {
-        this.activeChannel = undefined;
-      }
-      this.peerStatus = "disconnected";
+      this.handlePeerDisconnected(active.connectionId);
     };
     channel.onerror = () => {
-      if (this.activeChannel === channel) {
-        this.activeChannel = undefined;
-      }
-      this.peerStatus = "disconnected";
+      this.handlePeerDisconnected(active.connectionId);
     };
 
     if (channel.readyState === "open") {
@@ -686,6 +675,16 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     });
   }
 
+  private rejectConnection(requestId: string, clientId: string, reason: string): void {
+    this.sendSignal({
+      type: "connection.reject",
+      requestId,
+      hostId: this.options.hostId,
+      clientId,
+      reason,
+    });
+  }
+
   private hostDescriptor(): PublicDeviceDescriptor {
     return (
       this.options.hostIdentity ?? {
@@ -696,17 +695,18 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     );
   }
 
-  private async closePeer(): Promise<void> {
-    const peer = this.peer;
-    this.bridge?.close();
-    this.bridge = undefined;
-    this.peer = undefined;
-    this.activeChannel = undefined;
-    this.activeClientId = undefined;
-    this.peerStatus = "disconnected";
-    if (peer) {
-      await peer.close();
+  private async closePeer(connectionId: string): Promise<void> {
+    const active = this.activePeers.get(connectionId);
+    if (!active) {
+      return;
     }
+
+    active.bridge?.close();
+    active.bridge = undefined;
+    active.activeChannel = undefined;
+    this.activePeers.delete(connectionId);
+    this.updatePeerStatus();
+    await active.peer.close();
   }
 
   private sendSignal(message: Record<string, unknown>): void {
@@ -715,8 +715,8 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     }
   }
 
-  private sendDeviceRevoked(): void {
-    this.activeChannel?.send(JSON.stringify({
+  private sendDeviceRevoked(active: ActivePeer): void {
+    active.activeChannel?.send(JSON.stringify({
       type: "event",
       event: {
         type: "device_revoked",
@@ -759,6 +759,46 @@ export class HostP2PRuntime implements HostP2PRuntimeApi {
     } satisfies HostP2PDiagnosticEvent;
     this.options.onDiagnostic?.(diagnostic);
     console.log("[coderelay:p2p]", JSON.stringify(diagnostic));
+  }
+
+  private handlePeerDisconnected(connectionId: string): void {
+    const active = this.activePeers.get(connectionId);
+    if (!active) {
+      return;
+    }
+
+    active.bridge?.close();
+    active.bridge = undefined;
+    active.activeChannel = undefined;
+    this.activePeers.delete(connectionId);
+    this.updatePeerStatus();
+  }
+
+  private updatePeerStatus(): void {
+    const peers = [...this.activePeers.values()];
+    if (peers.some((peer) => peer.status === "connected")) {
+      this.peerStatus = "connected";
+      return;
+    }
+    if (peers.some((peer) => peer.status === "connecting")) {
+      this.peerStatus = "connecting";
+      return;
+    }
+    this.peerStatus = "disconnected";
+  }
+
+  private activeConnectionSummaries(): Array<{
+    readonly clientId: string;
+    readonly connectionId: string;
+    readonly transport: "p2p";
+    readonly route: string;
+  }> {
+    return [...this.activePeers.values()].map((active) => ({
+      clientId: active.clientId,
+      connectionId: active.connectionId,
+      transport: "p2p" as const,
+      route: "WebRTC DataChannel -> Host local HTTP bridge",
+    }));
   }
 }
 
@@ -856,11 +896,11 @@ function challengeProofField(message: SignalInboundMessage, key: string): Challe
   return undefined;
 }
 
-function pairingUrlFor(webUrl: string, pairCode: string, signalUrl: string): string {
+function pairingUrlFor(webUrl: string, pairCode: string, signalUrl: string, cacheKey: string): string {
   const url = new URL(webUrl);
   const basePath = url.pathname.replace(/\/$/, "");
   url.pathname = `${basePath}/pair/${encodeURIComponent(pairCode)}`;
-  url.search = "";
+  url.search = new URLSearchParams({ v: cacheKey }).toString();
   url.hash = new URLSearchParams({ signal: signalUrl }).toString();
   return url.toString();
 }

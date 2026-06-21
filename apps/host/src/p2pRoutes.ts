@@ -51,6 +51,13 @@ export interface P2PManagedDevice {
   readonly revokedAt?: string;
 }
 
+export interface P2PActiveConnection {
+  readonly clientId: string;
+  readonly connectionId: string;
+  readonly transport: "p2p";
+  readonly route: string;
+}
+
 export interface P2PTopology {
   readonly signalUrl?: string;
   readonly hostId?: string;
@@ -63,12 +70,8 @@ export interface P2PTopology {
     readonly hasUsername: boolean;
     readonly hasCredential: boolean;
   }[];
-  readonly activeConnection?: {
-    readonly clientId: string;
-    readonly connectionId: string;
-    readonly transport: "p2p";
-    readonly route: string;
-  };
+  readonly activeConnection?: P2PActiveConnection;
+  readonly activeConnections?: readonly P2PActiveConnection[];
 }
 
 export interface P2PManagementState {

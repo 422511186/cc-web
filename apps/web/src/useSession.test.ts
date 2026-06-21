@@ -479,6 +479,52 @@ describe('useSession 执行状态与模型信息', () => {
     expect(result.current.pending).toBeNull();
   });
 
+  test('turn_end 事件应结束 executing,避免输出完成后仍显示停止按钮', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'delta', text: '回答完成' } as ServerEvent);
+    });
+    expect(result.current.status).toBe('executing');
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'turn_end', isError: false } as ServerEvent);
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.pending).toBeNull();
+  });
+
+  test('message_completed 事件也应结束 executing,作为缺少 turn_end 时的前端兜底', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+      FakeEventSource.instances[0].emit({ type: 'message_completed', operationId: 'op-1' } as ServerEvent);
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.pending).toBeNull();
+  });
+
+  test('message_failed 事件应退出 executing 并暴露错误', () => {
+    const { result } = renderHook(() => useSession('run-1'));
+
+    act(() => {
+      FakeEventSource.instances[0].emit({ type: 'status', state: 'executing' } as ServerEvent);
+      FakeEventSource.instances[0].emit({
+        type: 'message_failed',
+        operationId: 'op-1',
+        message: 'model failed',
+      } as ServerEvent);
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.pending).toBeNull();
+    expect(result.current.error).toBe('model failed');
+  });
+
   test('run_info 事件记录 model(effort 缺失)', () => {
     const { result } = renderHook(() => useSession('run-1'));
     expect(result.current.model).toBeNull();

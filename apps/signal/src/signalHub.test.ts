@@ -327,6 +327,49 @@ describe("SignalHub", () => {
     expect(outsider.sent).toEqual([{ type: "signal.error", requestId: "req-1", reason: "connection_not_found" }]);
   });
 
+  it("forwards host connection rejection back to the pending client", () => {
+    const createSignalHub = expectApiFunction("createSignalHub");
+    const hub = createSignalHub();
+    const host = new FakePeer();
+    const client = new FakePeer();
+    const outsider = new FakePeer();
+    const hostSession = hub.connectPeer(host);
+    const clientSession = hub.connectPeer(client);
+    const outsiderSession = hub.connectPeer(outsider);
+    hostSession.receive({ type: "host.online", hostId: "host-1" });
+    clientSession.receive({
+      type: "client.connect",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      clientPublicKeyFingerprint: "client-fp",
+    });
+    host.clear();
+    client.clear();
+    outsider.clear();
+
+    hostSession.receive({
+      type: "connection.reject",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      reason: "untrusted_client",
+    });
+    outsiderSession.receive({
+      type: "connection.reject",
+      requestId: "req-1",
+      hostId: "host-1",
+      clientId: "phone-1",
+      reason: "untrusted_client",
+    });
+
+    expect(client.sent).toEqual([
+      { type: "signal.error", requestId: "req-1", reason: "untrusted_client" },
+    ]);
+    expect(host.sent).toEqual([]);
+    expect(outsider.sent).toEqual([{ type: "signal.error", requestId: "req-1", reason: "connection_not_found" }]);
+  });
+
   it("rejects business API messages instead of forwarding them", () => {
     const createSignalHub = expectApiFunction("createSignalHub");
     const hub = createSignalHub();

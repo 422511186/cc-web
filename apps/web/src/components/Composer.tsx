@@ -108,7 +108,7 @@ export function Composer({
           multiple
           onChange={(e) => handleFiles(e.target.files, true)}
         />
-        {modeControl}
+        {modeControl && <div className="composer-mode">{modeControl}</div>}
         <textarea
           className="composer-input"
           value={text}

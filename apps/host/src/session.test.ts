@@ -403,6 +403,31 @@ describe("Session", () => {
     expect(events).toContainEqual({ type: "status", state: "idle" });
   });
 
+  it("SDK 流自然结束但缺少 result 时也应结束执行态", async () => {
+    const client = fakeClient(async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "done" }],
+        },
+        parent_tool_use_id: null,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage;
+    });
+    const { events, onEvent } = collector();
+    const session = new Session({ client, permissionMode: "default", onEvent });
+
+    session.send("go");
+    await session.runToCompletion();
+
+    expect(session.isBusy()).toBe(false);
+    expect(events).toContainEqual({ type: "turn_end", isError: false });
+    expect(events).toContainEqual({ type: "status", state: "idle" });
+  });
+
   it("状态转移顺序:executing→waiting(待答)→executing(答后)→idle(结束)", async () => {
     const client = fakeClient(async function* (params) {
       await params.canUseTool("Bash", { command: "x" }, { toolUseID: "t1" });

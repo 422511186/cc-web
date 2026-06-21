@@ -53,6 +53,7 @@ export function ModeMenu({
 
   return (
     <div
+      className="mode-menu"
       style={{ position: "relative", flex: "0 0 auto" }}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
@@ -61,6 +62,7 @@ export function ModeMenu({
       }}
     >
       <button
+        className="mode-menu-trigger"
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -95,6 +97,7 @@ export function ModeMenu({
       </button>
       {open && (
         <div
+          className="mode-menu-panel"
           role="menu"
           aria-label="Modes"
           style={{
@@ -119,6 +122,7 @@ export function ModeMenu({
             const active = option.value === mode;
             return (
               <button
+                className="mode-menu-item"
                 key={option.value}
                 type="button"
                 role="menuitemradio"

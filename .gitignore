@@ -5,6 +5,7 @@ dist/
 coverage/
 *.tsbuildinfo
 logs/
+.runtime/
 apps/e2e/.tmp/
 apps/e2e/test-results/
 apps/e2e/playwright-report/
